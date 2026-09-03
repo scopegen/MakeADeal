@@ -2,7 +2,7 @@
 
 client_id = "af73f5c2382af3a5bfe9bc5ce26eb239"
 name = "Scopegen Negotiator"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://noodle.scopegen.in"
 embedded = true
 
 [build]
@@ -52,4 +52,4 @@ prefix = "apps"
 subpath = "negotiate"
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = [ "https://noodle.scopegen.in/auth/callback" ]
