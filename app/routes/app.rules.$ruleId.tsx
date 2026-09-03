@@ -46,6 +46,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       hasAllProductsElsewhere,
       hasAnyOtherRule,
       initialProducts: [] as ProductRef[],
+      initialExcludedProducts: [] as ProductRef[],
     };
   }
 
@@ -56,11 +57,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Not found", { status: 404 });
   }
 
-  // Only productIds are stored - titles are looked up live for display, same
+  // Only IDs are stored - titles are looked up live for display, same
   // reasoning as the engine's live collection-membership check: no mirrored
-  // product data to go stale in our own DB.
-  let initialProducts: ProductRef[] = [];
-  if (rule.scopeType === "PRODUCT_GROUP" && rule.productIds.length > 0) {
+  // product data to go stale in our own DB. Shared by both productIds
+  // (PRODUCT_GROUP's inclusion list) and excludedProductIds (ALL_PRODUCTS/
+  // COLLECTION's carve-outs).
+  async function resolveProductTitles(ids: string[]): Promise<ProductRef[]> {
+    if (ids.length === 0) return [];
     const response = await admin.graphql(
       `#graphql
       query ProductTitles($ids: [ID!]!) {
@@ -71,7 +74,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           }
         }
       }`,
-      { variables: { ids: rule.productIds } },
+      { variables: { ids } },
     );
     const json = (await response.json()) as {
       data: { nodes: ({ id: string; title?: string } | null)[] };
@@ -79,7 +82,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // A product deleted since the rule was saved comes back as null (or
     // without a title field, since the inline fragment won't match) -
     // dropped silently rather than shown as a broken row.
-    initialProducts = (json.data.nodes ?? [])
+    return (json.data.nodes ?? [])
       .filter(
         (n): n is { id: string; title: string } =>
           n !== null && typeof n.title === "string",
@@ -87,7 +90,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       .map((n) => ({ id: n.id, title: n.title }));
   }
 
-  return { rule, hasAllProductsElsewhere, hasAnyOtherRule, initialProducts };
+  const initialProducts =
+    rule.scopeType === "PRODUCT_GROUP"
+      ? await resolveProductTitles(rule.productIds)
+      : [];
+  const initialExcludedProducts = await resolveProductTitles(
+    rule.excludedProductIds,
+  );
+
+  return {
+    rule,
+    hasAllProductsElsewhere,
+    hasAnyOtherRule,
+    initialProducts,
+    initialExcludedProducts,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +125,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const collectionTitle = String(formData.get("collectionTitle") ?? "") || null;
   const productIds = JSON.parse(
     String(formData.get("productIds") ?? "[]"),
+  ) as string[];
+  const excludedProductIds = JSON.parse(
+    String(formData.get("excludedProductIds") ?? "[]"),
   ) as string[];
 
   if (scopeType === "COLLECTION" && !collectionId) {
@@ -164,6 +184,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     collectionId: scopeType === "COLLECTION" ? collectionId : null,
     collectionTitle: scopeType === "COLLECTION" ? collectionTitle : null,
     productIds: scopeType === "PRODUCT_GROUP" ? productIds : [],
+    // Only meaningful for ALL_PRODUCTS/COLLECTION - PRODUCT_GROUP is already
+    // an explicit inclusion list, so exclusions are forced empty there
+    // rather than left to whatever stale value the form happened to submit.
+    excludedProductIds:
+      scopeType === "ALL_PRODUCTS" || scopeType === "COLLECTION"
+        ? excludedProductIds
+        : [],
     maxDiscountPercent: maxDiscountRaw,
     headerTitle,
     // Explicitly cleared, not just omitted - these fields no longer have
@@ -220,8 +247,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 // component
 // ---------------------------------------------------------------------------
 export default function RuleEditor() {
-  const { rule, hasAllProductsElsewhere, hasAnyOtherRule, initialProducts } =
-    useLoaderData<typeof loader>();
+  const {
+    rule,
+    hasAllProductsElsewhere,
+    hasAnyOtherRule,
+    initialProducts,
+    initialExcludedProducts,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -245,6 +277,9 @@ export default function RuleEditor() {
   );
   const [selectedProducts, setSelectedProducts] =
     useState<ProductRef[]>(initialProducts);
+  const [excludedProducts, setExcludedProducts] = useState<ProductRef[]>(
+    initialExcludedProducts,
+  );
   const [maxDiscountPercent, setMaxDiscountPercent] = useState(
     rule?.maxDiscountPercent?.toString() ?? "",
   );
@@ -270,6 +305,21 @@ export default function RuleEditor() {
     setSelectedProducts((prev) => prev.filter((p) => p.id !== id));
   }
 
+  async function pickExcludedProducts() {
+    const result = await shopify.resourcePicker({
+      type: "product",
+      multiple: true,
+      // Pre-selects whatever's already excluded, so reopening the picker to
+      // add one more doesn't force re-picking everything from scratch.
+      selectionIds: excludedProducts.map((p) => ({ id: p.id })),
+    });
+    if (!result) return;
+    setExcludedProducts(result.map((p) => ({ id: p.id, title: p.title })));
+  }
+  function removeExcludedProduct(id: string) {
+    setExcludedProducts((prev) => prev.filter((p) => p.id !== id));
+  }
+
   function handleSubmit() {
     const formData = new FormData();
     formData.set("name", name);
@@ -279,6 +329,10 @@ export default function RuleEditor() {
     formData.set(
       "productIds",
       JSON.stringify(selectedProducts.map((p) => p.id)),
+    );
+    formData.set(
+      "excludedProductIds",
+      JSON.stringify(excludedProducts.map((p) => p.id)),
     );
     formData.set("maxDiscountPercent", maxDiscountPercent);
     formData.set("headerTitle", headerTitle);
@@ -355,8 +409,8 @@ export default function RuleEditor() {
           </s-select>
           {hasAnyOtherRule && scopeType !== "ALL_PRODUCTS" && (
             <s-paragraph color="subdued">
-              &quot;All products&quot; is unavailable while other rules exist
-              - it can&apos;t coexist with them.
+              &quot;All products&quot; is unavailable while other rules exist,
+              since it can&apos;t coexist with them.
             </s-paragraph>
           )}
 
@@ -399,6 +453,44 @@ export default function RuleEditor() {
               )}
             </s-stack>
           )}
+
+          {/* Carve-outs from an otherwise shop-wide or collection-wide rule -
+              meaningless for PRODUCT_GROUP, which is already an explicit
+              inclusion list. */}
+          {(scopeType === "ALL_PRODUCTS" || scopeType === "COLLECTION") && (
+            <s-stack direction="block" gap="small">
+              <s-paragraph color="subdued">
+                Exclude products (optional): these won&apos;t be negotiable
+                under this rule, even though it otherwise covers them.
+              </s-paragraph>
+              <s-button onClick={pickExcludedProducts}>
+                {excludedProducts.length > 0
+                  ? "Change excluded products"
+                  : "Exclude products"}
+              </s-button>
+              {excludedProducts.length > 0 && (
+                <s-stack direction="block" gap="small">
+                  {excludedProducts.map((p) => (
+                    <s-stack
+                      key={p.id}
+                      direction="inline"
+                      gap="small"
+                      alignItems="center"
+                    >
+                      <s-paragraph>{p.title}</s-paragraph>
+                      <s-button
+                        variant="tertiary"
+                        tone="critical"
+                        onClick={() => removeExcludedProduct(p.id)}
+                      >
+                        Remove
+                      </s-button>
+                    </s-stack>
+                  ))}
+                </s-stack>
+              )}
+            </s-stack>
+          )}
         </s-stack>
       </s-section>
 
@@ -407,7 +499,7 @@ export default function RuleEditor() {
           label="Max discount %"
           value={maxDiscountPercent}
           placeholder="e.g. 10"
-          details="The most a customer can ever negotiate off - the negotiation engine handles everything else automatically."
+          details="The most a customer can ever negotiate off. The negotiation engine handles everything else automatically."
           onChange={(e: FieldChangeEvent) =>
             setMaxDiscountPercent(e.currentTarget.value)
           }

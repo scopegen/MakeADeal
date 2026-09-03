@@ -105,8 +105,8 @@ export default function RulesList() {
           <s-banner tone="info" heading="An all-products rule is active">
             <s-paragraph>
               This shop has a rule that covers every product. Delete it before
-              creating a collection or specific-products rule - the two
-              can&apos;t coexist, since the all-products rule already covers
+              creating a collection or specific-products rule, since the two
+              can&apos;t coexist and the all-products rule already covers
               everything.
             </s-paragraph>
           </s-banner>

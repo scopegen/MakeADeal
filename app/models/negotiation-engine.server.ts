@@ -64,7 +64,11 @@ export async function resolveEffectiveLimits(
   if (rules.length === 0) return null;
 
   const candidates = rules.filter((rule) => {
-    if (rule.scopeType === "ALL_PRODUCTS") return true;
+    if (rule.scopeType === "ALL_PRODUCTS") {
+      // excludedProductIds carves specific products out of an otherwise
+      // shop-wide rule - see the schema comment on that field.
+      return !rule.excludedProductIds.includes(productId);
+    }
     if (rule.scopeType === "PRODUCT_GROUP") {
       return rule.productIds.includes(productId);
     }
@@ -77,7 +81,11 @@ export async function resolveEffectiveLimits(
   if (collectionRules.length > 0) {
     const productCollectionIds = await getProductCollectionIds(admin, productId);
     for (const rule of collectionRules) {
-      if (rule.collectionId && productCollectionIds.has(rule.collectionId)) {
+      if (
+        rule.collectionId &&
+        productCollectionIds.has(rule.collectionId) &&
+        !rule.excludedProductIds.includes(productId)
+      ) {
         candidates.push(rule);
       }
     }

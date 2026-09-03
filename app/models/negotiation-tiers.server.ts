@@ -87,7 +87,7 @@ const NO_PRICE_TIER_1_TOO_LOW: Tier = {
   percentOfMaxDiscount: 0, // unused - noPrice is true
   noPrice: true,
   copies: [
-    "Thanks for the offer. We're a fair way apart on this one - could you move up a bit so I can see what I can do?",
+    "Thanks for the offer. We're a fair way apart on this one. Could you move up a bit so I can see what I can do?",
     "I appreciate you sharing a number. It's a good bit below where I can go, so if you could come up a little, I'll take another look.",
     "We're starting a little far apart here. If you can bring your offer up a bit, I'd be happy to work with you on this.",
     "I'd like to find something that works for us both. Could you move your offer up a little so we have more room to work with?",
@@ -172,7 +172,7 @@ const SEGMENT_TIERS: Record<CustomerSegment, Tier[]> = {
         "I've made a strong move on this and can offer {{counter_price}}. Would that work for you?",
         "We're getting quite close now. I can bring the price to {{counter_price}}. Shall we close this?",
         "I can push further to {{counter_price}}. If that works for you, I think we're nearly there.",
-        "That's a significant move from my side - {{counter_price}}. Could we make a deal at that price?",
+        "That's a significant move from my side: {{counter_price}}. Could we make a deal at that price?",
       ],
     },
     {

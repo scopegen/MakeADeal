@@ -134,6 +134,13 @@ model NegotiationRule {
   collectionTitle String?
   // Set only when scopeType = "PRODUCT_GROUP". Shopify Product GIDs.
   productIds String[] @default([])
+  // Carve-outs from an ALL_PRODUCTS or COLLECTION rule - meaningless for
+  // PRODUCT_GROUP, which is already an explicit inclusion list (excluding
+  // from it just means not including it in productIds in the first place).
+  // Checked live in resolveEffectiveLimits alongside the collection
+  // membership check, same "not mirrored, checked at negotiation time"
+  // reasoning as collectionId itself.
+  excludedProductIds String[] @default([])
 
   // Same nullable-by-default reasoning as the old NegotiationSettings had:
   // unset means this rule can't actually go live yet, never "assume some

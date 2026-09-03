@@ -5,7 +5,7 @@ import prisma from "../db.server";
 import { getShopByDomain } from "../models/negotiation-settings.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = await getShopByDomain(session.shop);
 
   const sessions = await prisma.negotiationSession.findMany({
@@ -13,6 +13,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { createdAt: "desc" },
     take: 50,
   });
+
+  // Product titles aren't stored on the session (only productId is, same
+  // "don't mirror Shopify data, look it up live" reasoning as the Rules
+  // editor's own title lookups) - resolved here in one batched call rather
+  // than showing the raw GID. A product deleted since the session happened
+  // comes back with no title and falls back to showing the id, same as the
+  // Rules editor's product picker does for a deleted product.
+  const productIds = [...new Set(sessions.map((s) => s.productId))];
+  const titleById = new Map<string, string>();
+  if (productIds.length > 0) {
+    const response = await admin.graphql(
+      `#graphql
+      query SessionProductTitles($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          id
+          ... on Product {
+            title
+          }
+        }
+      }`,
+      { variables: { ids: productIds } },
+    );
+    const json = (await response.json()) as {
+      data: { nodes: ({ id: string; title?: string } | null)[] };
+    };
+    for (const node of json.data.nodes ?? []) {
+      if (node && typeof node.title === "string") {
+        titleById.set(node.id, node.title);
+      }
+    }
+  }
 
   // Prisma Decimal fields don't survive React Router's client-side data
   // transport as real Decimal instances - .toString() works fine during SSR
@@ -25,6 +56,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     sessions: sessions.map((s) => ({
       ...s,
+      productTitle: titleById.get(s.productId) ?? s.productId,
       startingPrice: s.startingPrice.toString(),
       currentOfferPrice: s.currentOfferPrice?.toString() ?? null,
     })),
@@ -70,7 +102,7 @@ export default function NegotiationsLog() {
             <s-table-body>
               {sessions.map((s) => (
                 <s-table-row key={s.id}>
-                  <s-table-cell>{s.productId}</s-table-cell>
+                  <s-table-cell>{s.productTitle}</s-table-cell>
                   <s-table-cell>
                     <s-badge tone={STATUS_TONE[s.status] ?? "neutral"}>
                       {s.status}
