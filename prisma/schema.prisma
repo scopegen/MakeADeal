@@ -1,0 +1,336 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shop install lifecycle. Deliberately separate from `Session` (which is the
+// live access-token store managed by PrismaSessionStorage and gets its rows
+// deleted on app/uninstalled): this table is our own record of "has this shop
+// ever installed us," and survives across an uninstall/reinstall cycle so
+// shop/redact (which fires 48h after uninstall) has something stable to key
+// deletion off of. Upserted in the `afterAuth` hook in shopify.server.ts.
+model Shop {
+  id            String    @id @default(cuid())
+  shopDomain    String    @unique
+  installedAt   DateTime  @default(now())
+  uninstalledAt DateTime?
+  // Cached Shopify App Pricing plan handle, so the entitlement-check seam
+  // (see the negotiation engine, built later) can gate features without an
+  // API call on every request. Kept null/unset until pricing is actually
+  // wired up post-submission - nothing reads this yet.
+  planHandle    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  negotiationRules    NegotiationRule[]
+  ladders             Ladder[]
+  negotiationSessions NegotiationSession[]
+  offerLinks          OfferLink[]
+  rateLimitBuckets    RateLimitBucket[]
+}
+
+// ---------------------------------------------------------------------------
+// Negotiation domain
+// ---------------------------------------------------------------------------
+
+enum TriggerType {
+  ALWAYS_ON
+  DWELL_TIME
+  EXIT_INTENT
+  PAGE_REVISIT
+  COHORT_EMAIL
+}
+
+enum CheckoutMechanism {
+  DRAFT_ORDER
+  // DISCOUNT_CODE and CART_TRANSFORM are architecturally supported (this is
+  // an enum, not a hardcoded branch) but not implemented - Draft Order is
+  // the only confirmed v1 mechanism.
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum NegotiationSessionStatus {
+  ACTIVE
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum NegotiationActor {
+  CUSTOMER
+  BOT
+}
+
+// Assigned once, from the customer's first valid offer on a session, using
+// fixed price bands relative to the rule's floor price - never reassigned
+// afterward even if the customer's later offers would classify differently.
+// The tier progression and copy for a session are entirely determined by
+// this + the session's own tier index (negotiation-tiers.server.ts) - not
+// merchant-configurable, unlike everything else on NegotiationRule.
+enum CustomerSegment {
+  EASY_TO_CONVERT
+  CAN_BE_CONVERTED
+  MAYBE_CONVERTIBLE
+  TOO_LOW
+}
+
+enum RuleScopeType {
+  ALL_PRODUCTS
+  COLLECTION
+  PRODUCT_GROUP
+}
+
+// Replaces the old singleton NegotiationSettings + per-product
+// ProductSettings model entirely. A shop can now have MANY rules, each
+// carrying its own complete settings (discount, ladder, triggers,
+// templates, brand/UI text) plus a scope describing which products it
+// covers:
+//   - ALL_PRODUCTS: every product in the shop.
+//   - COLLECTION: every product in one specific Shopify collection
+//     (collectionId), checked live against the Admin API at negotiation
+//     time - collection membership isn't cached/mirrored here.
+//   - PRODUCT_GROUP: exactly the products listed in productIds.
+//
+// Exclusivity (enforced in the admin UI, not the DB): an ALL_PRODUCTS rule
+// can't coexist with any COLLECTION/PRODUCT_GROUP rule in either direction.
+//
+// Overlap resolution when a product matches more than one rule (e.g. two
+// collections it belongs to each have a rule): the rule with the higher
+// maxDiscountPercent wins, decided once at session start and then frozen
+// for that whole conversation via NegotiationSession.ruleId /
+// ladderIdSnapshot - later edits to a rule never retroactively change a
+// negotiation already in progress.
+model NegotiationRule {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // Merchant-facing label, e.g. "Summer sale collection." Optional - the
+  // admin UI falls back to a generated description (scope + discount) when
+  // blank, nothing hardcoded here either.
+  name String?
+
+  scopeType RuleScopeType @default(ALL_PRODUCTS)
+  // Set only when scopeType = "COLLECTION". collectionTitle is cached from
+  // the resource picker at selection time specifically so redisplaying it
+  // doesn't need its own read_collections scope - see the engine's live
+  // membership check for why collectionId itself still isn't enough on its
+  // own (it doesn't mirror which products are actually in it).
+  collectionId    String?
+  collectionTitle String?
+  // Set only when scopeType = "PRODUCT_GROUP". Shopify Product GIDs.
+  productIds String[] @default([])
+
+  // Same nullable-by-default reasoning as the old NegotiationSettings had:
+  // unset means this rule can't actually go live yet, never "assume some
+  // default percentage." Floor price is an additional, independent lever -
+  // whichever of the two (percent vs absolute) is more restrictive wins,
+  // same as the old per-product override did.
+  maxDiscountPercent Decimal? @db.Decimal(5, 2)
+  floorPriceOverride Decimal? @db.Decimal(10, 2)
+
+  defaultLadderId String?
+  defaultLadder   Ladder? @relation("RuleDefaultLadder", fields: [defaultLadderId], references: [id])
+
+  checkoutMechanism CheckoutMechanism @default(DRAFT_ORDER)
+
+  enabledTriggers  TriggerType[]
+  dwellTimeSeconds Int?
+
+  greetingTemplate     String?
+  acceptedTemplate     String?
+  floorReachedTemplate String?
+  rateLimitedTemplate  String?
+  expiredTemplate      String?
+
+  primaryColor   String?
+  secondaryColor String?
+  widgetPosition String?
+
+  headerTitle        String?
+  headerSubtitle     String?
+  launcherButtonText String?
+  sendButtonText     String?
+  acceptButtonText   String?
+  declineButtonText  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  negotiationSessions NegotiationSession[]
+
+  @@index([shopId, scopeType])
+}
+
+// A named, reusable set of ladder steps. A shop can have more than one (e.g.
+// "Default" vs a more aggressive one assigned to a specific product) even
+// though v1's admin UI may only ever expose editing a single default - the
+// model doesn't force that limit.
+model Ladder {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name   String @default("Default")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  steps LadderStep[]
+
+  rulesUsingAsDefault NegotiationRule[] @relation("RuleDefaultLadder")
+}
+
+model LadderStep {
+  id         String @id @default(cuid())
+  ladderId   String
+  ladder     Ladder @relation(fields: [ladderId], references: [id], onDelete: Cascade)
+  stepNumber Int
+
+  discountType  DiscountType
+  discountValue Decimal @db.Decimal(10, 2)
+
+  messageTemplate String?
+
+  @@unique([ladderId, stepNumber])
+}
+
+// A single negotiation conversation. Chat history / individual offers are
+// NegotiationOffer rows below, not embedded here.
+model NegotiationSession {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  productId String
+  // Resolved to the product's default variant at session creation (v1 is
+  // product-level, not variant-level - see the brief's stated limitation).
+  // Cached here, along with currencyCode below, specifically so accepting
+  // doesn't need to re-fetch this from the Admin API - the accept path
+  // already makes one unavoidable API call (draftOrderCreate); every extra
+  // round-trip before it is added latency stacked on a request already
+  // being proxied through the dev tunnel.
+  variantId String @default("")
+  currencyCode String @default("")
+
+  // Only one of these is set: a logged-in visitor gets customerId (needed so
+  // customers/redact has something to key off of); an anonymous visitor gets
+  // a cookie-backed anonymousId instead and is covered only by the 30-day
+  // retention purge, not by customer-linked redaction.
+  customerId  String?
+  anonymousId String?
+
+  status      NegotiationSessionStatus @default(ACTIVE)
+  triggerType TriggerType
+
+  // Doubles as the tier index into the assigned segment's tier table (0 =
+  // no offer yet, 1 = tier 1, 2 = tier 2, ...) - same field the ladder
+  // system used for round tracking, repurposed rather than duplicated.
+  currentRound       Int      @default(0)
+  // Locked in on the customer's first valid offer - see the enum comment.
+  segment            CustomerSegment?
+  startingPrice      Decimal  @db.Decimal(10, 2)
+  currentOfferPrice  Decimal? @db.Decimal(10, 2)
+
+  // Which rule won this session (per the "highest max discount %" overlap
+  // resolution) and which ladder it pointed to at that moment - both frozen
+  // at session start, so editing/deleting a rule or its ladder later never
+  // retroactively changes an in-flight or historical negotiation. SetNull
+  // (not the default Cascade) on the rule relation: deleting a rule should
+  // never delete negotiation history, just orphan the reference.
+  ruleId String?
+  rule   NegotiationRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  ladderIdSnapshot String?
+
+  checkoutMechanism   CheckoutMechanism @default(DRAFT_ORDER)
+  draftOrderId        String?
+  draftOrderExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  // Retention window (30 days, confirmed) - set at creation, read by the
+  // purge job. Not merchant-configurable; this was decided as a fixed
+  // policy, not listed among the merchant-configurable settings.
+  expiresAt DateTime
+
+  offers NegotiationOffer[]
+
+  @@index([shopId, status])
+  @@index([expiresAt])
+}
+
+model NegotiationOffer {
+  id        String             @id @default(cuid())
+  sessionId String
+  session   NegotiationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  round       Int
+  actor       NegotiationActor
+  offerPrice  Decimal?         @db.Decimal(10, 2)
+  messageText String?
+
+  createdAt DateTime @default(now())
+}
+
+// Signed, single-use link tokens for the cohort/email trigger. The merchant
+// pastes a generated link into their own ESP campaign (confirmed delivery
+// mechanism) - this app never sends email itself.
+model OfferLink {
+  id        String  @id @default(cuid())
+  shopId    String
+  shop      Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  token     String  @unique
+  productId String?
+
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+// Lightweight fixed-window rate-limit counters (per shop + IP-or-session
+// key). Postgres-backed rather than Redis, consistent with the "one
+// deployable app, no extra services" architecture call.
+model RateLimitBucket {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@unique([shopId, key, windowStart])
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}

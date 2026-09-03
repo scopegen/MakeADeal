@@ -1,0 +1,30 @@
+{% comment %}
+  Negotiation widget mount point.
+
+  Deliberately thin: which pages this shows on, brand colors/voice, trigger
+  rules (always-on, dwell-time, exit-intent, revisit, cohort/email token),
+  and the ladder-driven copy are ALL merchant-configured from this app's own
+  embedded admin - not from Theme Editor block settings - per the brief's
+  "zero code/theme changes required per merchant" rule. The widget script
+  below fetches that config at runtime, scoped by shop domain.
+
+  This is an app EMBED block (target: body), not an app block: the merchant
+  turns it on once under Theme Editor > App embeds, and it then renders on
+  every page, same as any floating chat widget. That matches the "anywhere
+  the merchant wants" placement decision - page-level visibility is runtime
+  logic in the script, not per-page theme placement.
+{% endcomment %}
+<div
+  id="scopegen-nego-widget"
+  data-shop="{{ shop.permanent_domain }}"
+  data-page-type="{{ request.page_type }}"
+  {% if product %}data-product-id="gid://shopify/Product/{{ product.id }}"{% endif %}
+></div>
+<script src="{{ 'negotiation-widget.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Negotiation widget",
+  "target": "body"
+}
+{% endschema %}
