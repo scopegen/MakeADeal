@@ -51,3 +51,22 @@ AGENTS.md
 /.mcp.json
 /.github/workflows/gardener-*.yml
 
+# Community-management files from the Shopify template, meant for their
+# open-source repo (contributor process, issue/PR templates, a CODEOWNERS
+# pointing at Shopify's own internal team, their template's own release
+# changelog) - meaningless for this private app. Also kept on disk, not
+# pushed. LICENSE.md deliberately left tracked/untouched here - it's MIT,
+# copyrighted to Shopify Inc., and needs a real decision (proprietary
+# license vs. none) rather than silent removal.
+/.github/workflows/ci.yml
+/.github/workflows/cla.yml
+/.github/workflows/close-waiting-for-response-issues.yml
+/.github/workflows/remove-labels-on-activity.yml
+/.github/workflows/update-javascript-branch.yml
+/.github/CODEOWNERS
+/.github/CODE_OF_CONDUCT.md
+/.github/CONTRIBUTING.md
+/.github/ISSUE_TEMPLATE.md
+/.github/PULL_REQUEST_TEMPLATE.md
+/CHANGELOG.md
+
