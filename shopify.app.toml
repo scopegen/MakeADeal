@@ -6,7 +6,19 @@ application_url = "https://noodle.scopegen.in"
 embedded = true
 
 [build]
-automatically_update_urls_on_dev = true
+# false, not true - this app is live in production at application_url below.
+# When true (the template default), every `shopify app dev` run silently
+# overwrites application_url/redirect_urls in Shopify's registered config
+# with that session's throwaway trycloudflare.com tunnel URL - which is
+# exactly what broke the embedded app in production (confirmed directly:
+# the merchant's browser was trying to load a dead
+# subscriber-chubby-likely-regards.trycloudflare.com tunnel, not
+# noodle.scopegen.in, after a local `npm run dev` session silently clobbered
+# the deployed config). With this false, local dev no longer touches the
+# production URLs at all - it uses SHOPIFY_APP_URL from the pulled/local env
+# instead. Re-enable only temporarily if actually testing via a dev tunnel
+# again, and remember to flip it back before the next deploy.
+automatically_update_urls_on_dev = false
 
 [webhooks]
 api_version = "2026-10"
