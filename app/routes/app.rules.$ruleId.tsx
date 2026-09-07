@@ -177,6 +177,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   const headerTitle = String(formData.get("headerTitle") ?? "").trim() || null;
+  const launcherButtonText =
+    String(formData.get("launcherButtonText") ?? "").trim() || null;
+  const primaryColorRaw = String(formData.get("primaryColor") ?? "").trim();
+  if (primaryColorRaw && !/^#[0-9a-fA-F]{6}$/.test(primaryColorRaw)) {
+    return { error: "Widget color must be a valid hex code, e.g. #191970." };
+  }
+  const primaryColor = primaryColorRaw || null;
 
   const data = {
     name,
@@ -193,12 +200,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         : [],
     maxDiscountPercent: maxDiscountRaw,
     headerTitle,
+    launcherButtonText,
+    primaryColor,
     // Explicitly cleared, not just omitted - these fields no longer have
     // any UI to set them, but Prisma's update() leaves anything left out of
     // `data` untouched. Without this, editing an old rule that still has
-    // values from before the form was simplified (leftover custom button
-    // text, colors, templates, ladder) through this form would silently
-    // keep serving that stale content forever, since saving would never
+    // values from before the form was simplified (leftover templates,
+    // secondary color, ladder) through this form would silently keep
+    // serving that stale content forever, since saving would never
     // actually touch those columns.
     floorPriceOverride: null,
     enabledTriggers: [] as (
@@ -214,11 +223,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     floorReachedTemplate: null,
     rateLimitedTemplate: null,
     expiredTemplate: null,
-    primaryColor: null,
     secondaryColor: null,
     widgetPosition: null,
     headerSubtitle: null,
-    launcherButtonText: null,
     sendButtonText: null,
     acceptButtonText: null,
     declineButtonText: null,
@@ -284,6 +291,12 @@ export default function RuleEditor() {
     rule?.maxDiscountPercent?.toString() ?? "",
   );
   const [headerTitle, setHeaderTitle] = useState(rule?.headerTitle ?? "");
+  const [launcherButtonText, setLauncherButtonText] = useState(
+    rule?.launcherButtonText ?? "",
+  );
+  const [primaryColor, setPrimaryColor] = useState(
+    rule?.primaryColor ?? "#191970",
+  );
 
   async function pickCollection() {
     const result = await shopify.resourcePicker({ type: "collection" });
@@ -336,6 +349,8 @@ export default function RuleEditor() {
     );
     formData.set("maxDiscountPercent", maxDiscountPercent);
     formData.set("headerTitle", headerTitle);
+    formData.set("launcherButtonText", launcherButtonText);
+    formData.set("primaryColor", primaryColor);
     submit(formData, { method: "post" });
   }
 
@@ -507,13 +522,30 @@ export default function RuleEditor() {
       </s-section>
 
       <s-section heading="Bot">
-        <s-text-field
-          label="Bot name"
-          value={headerTitle}
-          placeholder="e.g. Nibble"
-          details="Shown to customers in the negotiation chat widget."
-          onChange={(e: FieldChangeEvent) => setHeaderTitle(e.currentTarget.value)}
-        />
+        <s-stack direction="block" gap="base">
+          <s-text-field
+            label="Bot name"
+            value={headerTitle}
+            placeholder="e.g. Nibble"
+            details="Shown to customers in the negotiation chat widget."
+            onChange={(e: FieldChangeEvent) => setHeaderTitle(e.currentTarget.value)}
+          />
+          <s-text-field
+            label="Launcher button text (optional)"
+            value={launcherButtonText}
+            placeholder="e.g. Make an offer"
+            details="Shown on the floating button before a customer opens the chat. Defaults to &quot;Make an offer&quot; if left blank."
+            onChange={(e: FieldChangeEvent) =>
+              setLauncherButtonText(e.currentTarget.value)
+            }
+          />
+          <s-color-field
+            label="Widget color"
+            value={primaryColor}
+            details="Used for the header, chat bubbles, and buttons throughout the widget."
+            onChange={(e: FieldChangeEvent) => setPrimaryColor(e.currentTarget.value)}
+          />
+        </s-stack>
       </s-section>
     </s-page>
   );

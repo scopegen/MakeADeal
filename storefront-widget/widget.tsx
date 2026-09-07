@@ -15,10 +15,14 @@ import { createRoot } from "react-dom/client";
 // Visual approach: structural/animation CSS lives in one injected
 // <style> tag (STYLESHEET below, scoped by an "sgn-" class prefix) so real
 // hover/focus/keyframe support exists - inline styles alone can't do that.
-// Deliberately not merchant-customizable: one fixed blue accent color and
-// fixed button/header copy throughout, everywhere. The only thing a
-// merchant configures is the bot's name (headerTitle) - see the Rules
-// admin page.
+// The accent color is a CSS custom property (--sgn-accent/--sgn-accent-
+// hover) with a midnight-blue default baked into the stylesheet itself,
+// overridden at runtime once the rule's config loads (see the useEffect
+// in ChatWidget) - this lets one static injected stylesheet still reflect
+// a per-rule merchant color without re-injecting CSS per negotiation.
+// Per-rule merchant settings: bot name (headerTitle), launcher button
+// text, and this accent color - see the Rules admin page. Send/Accept/
+// Decline button text stay fixed, out of scope for merchant customization.
 //
 // Price extraction: the offer input is free text, not a number field - a
 // visitor can type "I'll pay 500 for it" and the price is pulled out via
@@ -46,10 +50,12 @@ type SessionStatus =
   | "rate_limited"
   | "error";
 
-// The only merchant-configurable thing left - everything else about the
-// widget's look and copy is fixed (see the file header comment).
+// The merchant-configurable pieces - see the file header comment for what's
+// still fixed.
 type WidgetConfig = {
   headerTitle: string | null;
+  launcherButtonText: string | null;
+  primaryColor: string | null;
 };
 
 const LAUNCHER_TEXT = "Make an offer";
@@ -87,6 +93,36 @@ function extractPrice(text: string): number | null {
   const cleaned = match[0].replace(/,/g, "");
   const value = parseFloat(cleaned);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Darkens a hex color by a fixed percentage per channel, for the hover
+// shade of a merchant-chosen accent color - same relationship the fixed
+// midnight-blue default already had (#191970 -> #12124f, roughly a 22%
+// reduction per channel). Falls back to the input unchanged if it isn't a
+// valid 6-digit hex, so a malformed merchant value never throws.
+function darkenColor(hex: string, amount = 0.22): string {
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!match) return hex;
+  const num = parseInt(match[1], 16);
+  const channel = (shift: number) => {
+    const value = (num >> shift) & 0xff;
+    return Math.max(0, Math.round(value * (1 - amount)));
+  };
+  const toHex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${toHex(channel(16))}${toHex(channel(8))}${toHex(channel(0))}`;
+}
+
+// Applies a merchant's chosen accent color at runtime by overriding the
+// CSS custom properties the injected STYLESHEET reads - see the file
+// header comment. No-ops (keeps the stylesheet's own midnight-blue
+// default) when the rule hasn't set one.
+function setAccentColor(primaryColor: string | null | undefined) {
+  if (!primaryColor) return;
+  document.documentElement.style.setProperty("--sgn-accent", primaryColor);
+  document.documentElement.style.setProperty(
+    "--sgn-accent-hover",
+    darkenColor(primaryColor),
+  );
 }
 
 function formatTime(date: Date) {
@@ -156,7 +192,10 @@ function ChatWidget({ productId }: { productId: string }) {
       .then((res) => res.json())
       .then((data) => {
         setEligible(Boolean(data && data.eligible));
-        if (data && data.config) setConfig(data.config);
+        if (data && data.config) {
+          setConfig(data.config);
+          setAccentColor(data.config.primaryColor);
+        }
       })
       .catch(() => setEligible(false));
   }, [productId]);
@@ -324,7 +363,7 @@ function ChatWidget({ productId }: { productId: string }) {
     return (
       <button type="button" onClick={handleOpen} className="sgn-launcher">
         <ChatIcon />
-        {LAUNCHER_TEXT}
+        {config?.launcherButtonText || LAUNCHER_TEXT}
       </button>
     );
   }
@@ -448,12 +487,19 @@ function ChatWidget({ productId }: { productId: string }) {
   );
 }
 
-// One fixed accent color, everywhere - not a merchant setting. See the
-// file header comment.
-const ACCENT = "#191970"; // midnight blue
-const ACCENT_HOVER = "#12124f"; // slightly darker, for hover feedback
+// Default accent color (midnight blue) - used whenever a rule doesn't set
+// its own primaryColor. Referenced only to compute the hover shade below;
+// the stylesheet itself reads the CSS custom properties, not these
+// directly, so a merchant's color can override them at runtime without
+// re-injecting CSS. See setAccentColor and the file header comment.
+const DEFAULT_ACCENT = "#191970";
+const DEFAULT_ACCENT_HOVER = "#12124f";
 
 const STYLESHEET = `
+:root {
+  --sgn-accent: ${DEFAULT_ACCENT};
+  --sgn-accent-hover: ${DEFAULT_ACCENT_HOVER};
+}
 .sgn-launcher, .sgn-panel, .sgn-panel * {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   box-sizing: border-box;
@@ -462,7 +508,7 @@ const STYLESHEET = `
   position: fixed; bottom: 20px; right: 20px; z-index: 2147483000;
   display: inline-flex; align-items: center; gap: 8px;
   padding: 14px 22px; border-radius: 999px; border: none;
-  background: ${ACCENT}; color: #fff; font-size: 14px; font-weight: 600;
+  background: var(--sgn-accent); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; box-shadow: 0 8px 24px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.12);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
@@ -483,7 +529,7 @@ const STYLESHEET = `
 }
 .sgn-header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 16px; background: ${ACCENT}; color: #fff;
+  padding: 16px; background: var(--sgn-accent); color: #fff;
 }
 .sgn-header-title { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
 .sgn-close-btn {
@@ -514,7 +560,7 @@ const STYLESHEET = `
   to { opacity: 1; transform: translateY(0); }
 }
 .sgn-bubble-bot { background: #f0f1f3; color: #111; border-bottom-left-radius: 4px; }
-.sgn-bubble-customer { background: ${ACCENT}; color: #fff; border-bottom-right-radius: 4px; }
+.sgn-bubble-customer { background: var(--sgn-accent); color: #fff; border-bottom-right-radius: 4px; }
 .sgn-bubble-system {
   background: transparent; color: #9aa0a6; font-size: 12px; font-style: italic;
   box-shadow: none; max-width: 100%; text-align: center;
@@ -532,7 +578,7 @@ const STYLESHEET = `
 }
 .sgn-checkout-link {
   display: block; text-align: center; margin: 0 16px 16px; padding: 12px;
-  border-radius: 999px; background: ${ACCENT}; color: #fff; text-decoration: none;
+  border-radius: 999px; background: var(--sgn-accent); color: #fff; text-decoration: none;
   font-weight: 700; font-size: 13.5px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   transition: transform 0.12s ease;
 }
@@ -543,14 +589,14 @@ const STYLESHEET = `
   flex: 1; min-width: 0; padding: 10px 14px; border: 1.5px solid #e5e5e5;
   border-radius: 999px; font-size: 13.5px; outline: none; transition: border-color 0.15s ease;
 }
-.sgn-input:focus { border-color: ${ACCENT}; }
+.sgn-input:focus { border-color: var(--sgn-accent); }
 .sgn-action-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .sgn-btn {
-  padding: 9px 16px; border: none; border-radius: 999px; background: ${ACCENT};
+  padding: 9px 16px; border: none; border-radius: 999px; background: var(--sgn-accent);
   color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
   transition: transform 0.12s ease, background 0.12s ease;
 }
-.sgn-btn:hover:not(:disabled) { transform: translateY(-1px); background: ${ACCENT_HOVER}; }
+.sgn-btn:hover:not(:disabled) { transform: translateY(-1px); background: var(--sgn-accent-hover); }
 .sgn-btn:disabled { opacity: 0.6; cursor: default; }
 .sgn-btn-secondary {
   padding: 9px 16px; border: 1.5px solid #e0e0e0; border-radius: 999px; background: #fff;

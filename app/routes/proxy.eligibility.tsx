@@ -25,14 +25,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ eligible: false });
   }
 
-  // The bot's name is the only merchant-configurable thing left in the
-  // widget - colors, button text, and everything else are fixed (see the
-  // widget's own file header comment). Comes from whichever rule won (see
-  // resolveEffectiveLimits's overlap resolution), not a shop-wide singleton.
+  // Merchant-configurable pieces the widget actually reads - see its file
+  // header comment for what's still fixed (Send/Accept/Decline text).
+  // Comes from whichever rule won (see resolveEffectiveLimits's overlap
+  // resolution), not a shop-wide singleton.
   return Response.json({
     eligible: true,
     config: {
       headerTitle: limits.rule.headerTitle ?? null,
+      launcherButtonText: limits.rule.launcherButtonText ?? null,
+      primaryColor: limits.rule.primaryColor ?? null,
     },
   });
 };
