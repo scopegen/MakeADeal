@@ -168,6 +168,37 @@ function ChatIcon() {
   );
 }
 
+// Price tag + sparkle marks, shown once in the congratulations banner on
+// acceptance - see showDiscountPercent below for why it only ever renders
+// with a real, computed discount, never a placeholder.
+function TagIcon() {
+  return (
+    <svg
+      width="34"
+      height="34"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+      className="sgn-tag-icon"
+    >
+      <path
+        d="M11.5 3.5h5A2 2 0 0 1 18.5 5.5v5a2 2 0 0 1-.586 1.414l-7 7a2 2 0 0 1-2.828 0l-5-5a2 2 0 0 1 0-2.828l7-7A2 2 0 0 1 11.5 3.5z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <circle cx="14.75" cy="8.25" r="1.25" fill="currentColor" />
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+        <path d="M4 4l1.4 1.4" />
+        <path d="M2.5 9h2" />
+        <path d="M6 2.5v2" />
+        <path d="M20.5 15.5l1.2 1.2" />
+        <path d="M21.5 20h-2" />
+      </g>
+    </svg>
+  );
+}
+
 function ChatWidget({ productId }: { productId: string }) {
   const [eligible, setEligible] = useState(false);
   const [config, setConfig] = useState<WidgetConfig | null>(null);
@@ -180,6 +211,11 @@ function ChatWidget({ productId }: { productId: string }) {
   // to wait for the final offer if they're happy sooner.
   const [hasOffer, setHasOffer] = useState(false);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  // Both only needed to compute the congratulations banner's discount
+  // percentage once accepted - startingPrice comes back from /start but was
+  // otherwise unused until now.
+  const [startingPrice, setStartingPrice] = useState<number | null>(null);
+  const [acceptedPrice, setAcceptedPrice] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
@@ -241,6 +277,9 @@ function ChatWidget({ productId }: { productId: string }) {
       if (data && data.sessionId) {
         sessionIdRef.current = data.sessionId;
         setStatus("active");
+        if (typeof data.startingPrice === "number") {
+          setStartingPrice(data.startingPrice);
+        }
         // Greeting is always two separate messages (see proxy.start's
         // `messages` array) - rendered as two consecutive bot bubbles,
         // not one message with a line break.
@@ -284,6 +323,7 @@ function ChatWidget({ productId }: { productId: string }) {
       if (data.status === "ACCEPTED") {
         setStatus("accepted");
         setCheckoutUrl(data.checkoutUrl);
+        if (typeof data.price === "number") setAcceptedPrice(data.price);
         addMessage("bot", data.message);
         return;
       }
@@ -358,6 +398,14 @@ function ChatWidget({ productId }: { productId: string }) {
     status === "active" &&
     lastMessage?.role === "bot" &&
     lastMessage.isFinalOffer === true;
+
+  // Rounded to the nearest whole percent for the congratulations banner -
+  // null (never 0 or a placeholder) whenever either price is missing, so
+  // the banner simply doesn't render rather than showing a wrong number.
+  const discountPercent =
+    startingPrice && acceptedPrice != null && startingPrice > 0
+      ? Math.round(((startingPrice - acceptedPrice) / startingPrice) * 100)
+      : null;
 
   if (!open) {
     return (
@@ -438,6 +486,16 @@ function ChatWidget({ productId }: { productId: string }) {
           </div>
         )}
       </div>
+
+      {status === "accepted" && discountPercent !== null && discountPercent > 0 && (
+        <div className="sgn-congrats">
+          <TagIcon />
+          <p className="sgn-congrats-text">
+            You got a <span className="sgn-congrats-badge">{discountPercent}%</span>{" "}
+            discount!
+          </p>
+        </div>
+      )}
 
       {checkoutUrl && (
         <a
@@ -575,6 +633,21 @@ const STYLESHEET = `
 @keyframes sgn-typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-4px); opacity: 1; }
+}
+.sgn-congrats {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  margin: 4px 16px 16px; padding: 18px 16px 16px; text-align: center;
+  animation: sgn-congrats-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes sgn-congrats-in {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+.sgn-tag-icon { color: var(--sgn-accent); }
+.sgn-congrats-text { margin: 0; font-size: 14px; color: #333; font-weight: 500; }
+.sgn-congrats-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  background: var(--sgn-accent); color: #fff; font-weight: 700;
 }
 .sgn-checkout-link {
   display: block; text-align: center; margin: 0 16px 16px; padding: 12px;
