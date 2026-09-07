@@ -15,6 +15,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const hasAllProductsRule = rules.some((r) => r.scopeType === "ALL_PRODUCTS");
 
+  // Deep link straight to the theme editor with the widget's app embed
+  // pre-activated - App Store review requirement 5.1.3 (theme app
+  // extensions need in-app onboarding instructions, ideally with a deep
+  // link) - see https://shopify.dev/docs/apps/build/online-store/theme-app-extensions/configuration.
+  // activateAppId is "{client_id}/{block handle}" - the block handle
+  // ("negotiation-widget") comes from the liquid file's own name
+  // (extensions/negotiation-widget/blocks/negotiation-widget.liquid), not
+  // something separately configured, since Shopify derives it from the
+  // filename when the schema doesn't set one explicitly.
+  const themeEditorDeepLink = `https://${session.shop}/admin/themes/current/editor?context=apps&activateAppId=${process.env.SHOPIFY_API_KEY}/negotiation-widget`;
+
   return {
     rules: rules.map((r) => ({
       id: r.id,
@@ -26,6 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       createdAt: r.createdAt,
     })),
     hasAllProductsRule,
+    themeEditorDeepLink,
   };
 };
 
@@ -67,7 +79,8 @@ const SCOPE_LABEL: Record<string, string> = {
 };
 
 export default function RulesList() {
-  const { rules, hasAllProductsRule } = useLoaderData<typeof loader>();
+  const { rules, hasAllProductsRule, themeEditorDeepLink } =
+    useLoaderData<typeof loader>();
   const submit = useSubmit();
 
   function scopeSummary(rule: (typeof rules)[number]) {
@@ -99,6 +112,18 @@ export default function RulesList() {
       >
         Create rule
       </s-button>
+
+      <s-section heading="Turn on the storefront widget">
+        <s-paragraph>
+          Rules alone don&apos;t put the negotiation chat on your storefront -
+          you also need to turn on the &quot;Negotiation widget&quot; app
+          embed once, in your theme editor. This only needs to be done a
+          single time, and it applies across your whole store.
+        </s-paragraph>
+        <s-button href={themeEditorDeepLink} target="_blank">
+          Open theme editor
+        </s-button>
+      </s-section>
 
       <s-section>
         {hasAllProductsRule && (
