@@ -93,10 +93,8 @@ export default function NegotiationsLog() {
             <s-table-header-row>
               <s-table-header>Product</s-table-header>
               <s-table-header>Status</s-table-header>
-              <s-table-header>Round</s-table-header>
               <s-table-header format="numeric">Starting price</s-table-header>
               <s-table-header format="numeric">Current offer</s-table-header>
-              <s-table-header>Trigger</s-table-header>
               <s-table-header>Started</s-table-header>
             </s-table-header-row>
             <s-table-body>
@@ -108,10 +106,8 @@ export default function NegotiationsLog() {
                       {s.status}
                     </s-badge>
                   </s-table-cell>
-                  <s-table-cell>{s.currentRound}</s-table-cell>
                   <s-table-cell>{s.startingPrice}</s-table-cell>
                   <s-table-cell>{s.currentOfferPrice ?? "—"}</s-table-cell>
-                  <s-table-cell>{s.triggerType}</s-table-cell>
                   <s-table-cell>
                     {new Date(s.createdAt).toLocaleString()}
                   </s-table-cell>
