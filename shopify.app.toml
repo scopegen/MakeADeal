@@ -1,7 +1,12 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "af73f5c2382af3a5bfe9bc5ce26eb239"
-name = "Scopegen Negotiator"
+# Renamed directly in Partner Dashboard - kept in sync here so a future
+# `shopify app deploy` from this file doesn't push the old name back over
+# the live one. handle stays "noodle-negotiator" below regardless (handles
+# don't change when the display name does, and plain "noodle" is taken
+# anyway).
+name = "Noodle"
 # The URL slug of the embedded app home: admin.shopify.com/store/.../apps/
 # <handle>/... - was defaulting to a slug derived from an earlier
 # registered name ("negotiator-by-scopegen"), out of sync with the
