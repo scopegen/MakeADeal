@@ -120,7 +120,7 @@ export default function RulesList() {
           embed once, in your theme editor. This only needs to be done a
           single time, and it applies across your whole store.
         </s-paragraph>
-        <s-button href={themeEditorDeepLink} target="_blank">
+        <s-button href={themeEditorDeepLink} target="_parent">
           Open theme editor
         </s-button>
       </s-section>
