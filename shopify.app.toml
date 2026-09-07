@@ -2,6 +2,13 @@
 
 client_id = "af73f5c2382af3a5bfe9bc5ce26eb239"
 name = "Scopegen Negotiator"
+# The URL slug of the embedded app home: admin.shopify.com/store/.../apps/
+# <handle>/... - was defaulting to a slug derived from an earlier
+# registered name ("negotiator-by-scopegen"), out of sync with the
+# noodle.scopegen.in branding. Changing this breaks any existing bookmarks/
+# links using the old slug, but Shopify Admin's own nav (sidebar, app
+# switcher) picks up the new one automatically - no merchant action needed.
+handle = "noodle"
 application_url = "https://noodle.scopegen.in"
 embedded = true
 
