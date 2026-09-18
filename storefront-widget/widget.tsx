@@ -408,26 +408,41 @@ function ChatWidget({ productId }: { productId: string }) {
       ? Math.round(((startingPrice - acceptedPrice) / startingPrice) * 100)
       : null;
 
+  // Rendered unconditionally, not just when closed - the launcher lives
+  // inline in the merchant's product template now (it's a real page
+  // element, not a floating trigger sharing the panel's corner), so
+  // hiding it on open would leave a jarring empty gap where a button used
+  // to be. The panel opens as an overlay ON TOP of it below, not instead
+  // of it. handleOpen is safe to call again while already open (setOpen
+  // is a no-op if already true, startSession only fires if a session
+  // doesn't already exist), so leaving this clickable the whole time is
+  // harmless.
+  const launcher = (
+    <button type="button" onClick={handleOpen} className="sgn-launcher">
+      <ChatIcon />
+      {config?.launcherButtonText || LAUNCHER_TEXT}
+    </button>
+  );
+
   if (!open) {
-    return (
-      <button type="button" onClick={handleOpen} className="sgn-launcher">
-        <ChatIcon />
-        {config?.launcherButtonText || LAUNCHER_TEXT}
-      </button>
-    );
+    return launcher;
   }
 
-  // Portaled straight to document.body, not rendered in place - the panel
-  // is position: fixed and needs to stay anchored to the real viewport.
-  // Now that the launcher (and this mount point) lives inline inside the
-  // merchant's product template instead of body-injected, any ancestor in
-  // the theme's own markup with a CSS transform/filter/perspective/
-  // contain would silently turn position: fixed into "fixed relative to
-  // that ancestor" instead of the viewport - a real, common thing themes
-  // do (sliders, sticky sections, animations). The portal sidesteps that
-  // entirely: this DOM subtree's parent is always document.body itself,
-  // regardless of where in the page the block was dropped.
-  return createPortal(
+  return (
+    <>
+      {launcher}
+      {/* Portaled straight to document.body, not rendered in place - the
+      panel is position: fixed and needs to stay anchored to the real
+      viewport. Now that the launcher (and this mount point) lives inline
+      inside the merchant's product template instead of body-injected,
+      any ancestor in the theme's own markup with a CSS transform/filter/
+      perspective/contain would silently turn position: fixed into "fixed
+      relative to that ancestor" instead of the viewport - a real, common
+      thing themes do (sliders, sticky sections, animations). The portal
+      sidesteps that entirely: this DOM subtree's parent is always
+      document.body itself, regardless of where in the page the block was
+      dropped. */}
+      {createPortal(
     <div className="sgn-panel">
       <div className="sgn-header">
         <div className="sgn-header-title">{headerTitle}</div>
@@ -553,7 +568,9 @@ function ChatWidget({ productId }: { productId: string }) {
         </div>
       )}
     </div>,
-    document.body,
+        document.body,
+      )}
+    </>
   );
 }
 
