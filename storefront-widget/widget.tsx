@@ -563,7 +563,17 @@ const STYLESHEET = `
   box-sizing: border-box;
 }
 .sgn-launcher {
-  position: fixed; bottom: 20px; right: 20px; z-index: 2147483000;
+  /* Was: position: fixed; bottom: 20px; right: 20px; z-index: 2147483000;
+     Commented out rather than deleted for a fast rollback - this is going
+     straight to production with no staging environment. That fixed
+     positioning made sense when this rendered from an app EMBED
+     (target: body, floating on every page); now it's a regular app BLOCK
+     (target: section) the merchant places inline in their product
+     template themselves, so the launcher should flow in the page
+     normally instead of floating over it. The chat panel below
+     (.sgn-panel) is untouched and still position: fixed - the overlay
+     that opens on click stays a floating overlay, only the launcher
+     trigger itself moved inline. */
   display: inline-flex; align-items: center; gap: 8px;
   padding: 14px 22px; border-radius: 999px; border: none;
   background: var(--sgn-accent); color: #fff; font-size: 14px; font-weight: 600;

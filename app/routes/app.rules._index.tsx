@@ -15,16 +15,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const hasAllProductsRule = rules.some((r) => r.scopeType === "ALL_PRODUCTS");
 
-  // Deep link straight to the theme editor with the widget's app embed
-  // pre-activated - App Store review requirement 5.1.3 (theme app
-  // extensions need in-app onboarding instructions, ideally with a deep
-  // link) - see https://shopify.dev/docs/apps/build/online-store/theme-app-extensions/configuration.
-  // activateAppId is "{client_id}/{block handle}" - the block handle
-  // ("negotiation-widget") comes from the liquid file's own name
-  // (extensions/negotiation-widget/blocks/negotiation-widget.liquid), not
-  // something separately configured, since Shopify derives it from the
-  // filename when the schema doesn't set one explicitly.
-  const themeEditorDeepLink = `https://${session.shop}/admin/themes/current/editor?context=apps&activateAppId=${process.env.SHOPIFY_API_KEY}/negotiation-widget`;
+  // Deep link straight to the theme editor with the widget's app block
+  // ready to add to the product template - App Store review requirement
+  // 5.1.3 (theme app extensions need in-app onboarding instructions,
+  // ideally with a deep link) - see
+  // https://shopify.dev/docs/apps/build/online-store/theme-app-extensions/configuration.
+  // addAppBlockId is "{client_id}/{block handle}" (same handle-from-
+  // filename rule as before) - this is the app BLOCK deep-link format, not
+  // activateAppId (that one's for app EMBEDS, which this widget no longer
+  // is - see the liquid file's own comment for why it switched). template=
+  // product + target=newAppsSection are both required by this format:
+  // template picks which template opens, target tells the editor to drop
+  // the block into that template's "apps" section rather than requiring
+  // the merchant to already have one open.
+  const themeEditorDeepLink = `https://${session.shop}/admin/themes/current/editor?template=product&addAppBlockId=${process.env.SHOPIFY_API_KEY}/negotiation-widget&target=newAppsSection`;
 
   return {
     rules: rules.map((r) => ({
