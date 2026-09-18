@@ -192,6 +192,14 @@ export async function createNegotiatedDraftOrder(
             },
           ],
           note: `Negotiated via Scopegen Negotiator - session ${sessionId}`,
+          // Tags carry forward automatically from draft order to the
+          // completed Order once draftOrderComplete runs (confirmed via
+          // Shopify's own API-announcements post - no extra step needed on
+          // completion). This is the one durable, filterable/searchable
+          // marker that an order came from a Noodle negotiation - the
+          // `note` above is free text and doesn't show up in Admin's order
+          // search/filter UI the way a tag does.
+          tags: ["Noodle"],
         },
       },
     },

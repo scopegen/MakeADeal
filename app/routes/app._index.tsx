@@ -79,6 +79,14 @@ export default function NegotiationsLog() {
   return (
     <s-page heading="Negotiations">
       <s-section>
+        <s-banner tone="info" heading="Verifying negotiated orders">
+          <s-paragraph>
+            Orders created from an accepted negotiation are tagged{" "}
+            <strong>Noodle</strong> in your order list. Use that tag to
+            filter or verify which orders came from a negotiation.
+          </s-paragraph>
+        </s-banner>
+
         {sessions.length === 0 ? (
           <s-stack direction="block" gap="base" alignItems="center">
             <s-paragraph>
