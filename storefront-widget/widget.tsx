@@ -574,8 +574,8 @@ const STYLESHEET = `
      (.sgn-panel) is untouched and still position: fixed - the overlay
      that opens on click stays a floating overlay, only the launcher
      trigger itself moved inline. */
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 14px 22px; border-radius: 999px; border: none;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px 22px; border-radius: 999px; border: none;
   background: var(--sgn-accent); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; box-shadow: 0 8px 24px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.12);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
