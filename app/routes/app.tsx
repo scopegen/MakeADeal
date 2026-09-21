@@ -5,6 +5,7 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
 import { hasActiveSubscription } from "../models/partner-billing.server";
+import { isInternalShop } from "../models/internal-access.server";
 
 // Gates every page under /app behind an active Shopify App Pricing
 // subscription - there's no free plan, so a merchant with no subscription
@@ -42,12 +43,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // eslint-disable-next-line no-undef
     apiKey: process.env.SHOPIFY_API_KEY || "",
     subscribed,
+    // Only decides whether the Internal nav link is shown. Cosmetic: the
+    // internal routes enforce access themselves, see internal-access.server.
+    isInternal: isInternalShop(session.shop),
     pricingUrl: `https://admin.shopify.com/store/${cleanShop}/charges/noodle-negotiator/pricing_plans`,
   };
 };
 
 export default function App() {
-  const { apiKey, subscribed, pricingUrl } = useLoaderData<typeof loader>();
+  const { apiKey, subscribed, isInternal, pricingUrl } =
+    useLoaderData<typeof loader>();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -56,6 +61,7 @@ export default function App() {
           <s-app-nav>
             <s-link href="/app">Negotiations</s-link>
             <s-link href="/app/rules">Rules</s-link>
+            {isInternal && <s-link href="/app/internal">Internal</s-link>}
           </s-app-nav>
           <Outlet />
         </>
