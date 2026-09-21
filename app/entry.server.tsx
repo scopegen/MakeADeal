@@ -5,6 +5,13 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startDataRetention } from "./models/data-retention.server";
+
+// Starts the hourly retention job (removes shopper ids from negotiations older
+// than 30 days, deletes stale rate-limit rows). Runs once when the server
+// process loads this module, not per request. Does nothing outside production
+// unless DATA_RETENTION_ENABLED=true.
+startDataRetention();
 
 export const streamTimeout = 5000;
 
