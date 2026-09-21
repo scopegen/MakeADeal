@@ -5,6 +5,12 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startDraftOrderCleanup } from "./models/draft-order-cleanup.server";
+
+// Starts the hourly cleanup of abandoned negotiated draft orders. Runs once
+// when the server process loads this module, not per request. Does nothing
+// outside production unless DRAFT_CLEANUP_ENABLED=true.
+startDraftOrderCleanup();
 
 export const streamTimeout = 5000;
 
