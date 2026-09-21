@@ -38,10 +38,11 @@ export default function Privacy() {
             the bot&apos;s display name.
           </li>
           <li>
-            The names of the products you negotiate on, and the status of the
-            draft orders the App creates (for example, whether one was
-            completed into an order), read from your store through the same
-            access when needed. We do not keep a copy of this.
+            Your store&apos;s name, the names of the products you negotiate on,
+            and the status of the draft orders the App creates (for example,
+            whether one was completed into an order), read from your store
+            through the same access when needed. We do not keep a copy of
+            this.
           </li>
         </ul>
 
