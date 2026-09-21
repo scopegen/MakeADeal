@@ -11,7 +11,7 @@ export default function Privacy() {
     <div className={styles.page}>
       <div className={styles.content}>
         <h1>Privacy Policy</h1>
-        <p className={styles.updated}>Last updated: September 7, 2026</p>
+        <p className={styles.updated}>Last updated: September 21, 2026</p>
 
         <p>
           This Privacy Policy describes how Scopegen (&quot;we&quot;,
@@ -36,6 +36,12 @@ export default function Privacy() {
             The negotiation rules you configure: which products or
             collections they apply to, your maximum discount percentage, and
             the bot&apos;s display name.
+          </li>
+          <li>
+            The names of the products you negotiate on, and the status of the
+            draft orders the App creates (for example, whether one was
+            completed into an order), read from your store through the same
+            access when needed. We do not keep a copy of this.
           </li>
         </ul>
 
@@ -78,6 +84,14 @@ export default function Privacy() {
           <li>
             Let merchants see a log of past negotiations on their own store
             within the App.
+          </li>
+          <li>
+            Understand how the App is used, so we can support merchants and
+            improve it. Our team can view store-level and product-level
+            figures, such as how many negotiations a store has had, on which
+            products, at what prices, and how many became orders. This uses
+            store, product, price, and outcome information, not shopper
+            identifiers.
           </li>
         </ul>
         <p>
