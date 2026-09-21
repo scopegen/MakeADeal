@@ -58,29 +58,49 @@ ORDER BY total DESC;
 - What counts as a negotiation: every session started, or only accepted ones.
 - The test store (sg-noida) shows up. Filter it out for real-merchant numbers.
 - Uninstalled stores vanish 48 hours after uninstall (shop/redact deletes the Shop row and all sessions). Keeping history for them means an aggregates-only table, and whether even the shop domain can be kept after a redact is a compliance call.
-- Counts will shrink once the purge job in item 3 exists.
+- Counts do not shrink after the retention job in item 3 goes live: it removes shopper ids from old negotiations but keeps the records, so per-store history stays. Only the split between Active and Expired changes.
 
-## 3. 30-day session purge job
+## 3. 30-day retention job: built, running in dry-run
 
-The privacy policy (section 3) promises negotiation data is automatically
-deleted 30 days after it starts. The code does not do this.
+Shopify's protected customer data rules say personal data must not be kept
+longer than needed, and the privacy policy promised deletion 30 days after a
+negotiation starts. Nothing did this: sessions and rate-limit rows piled up
+forever, and shoppers' real IP addresses were kept in the rate-limit table.
 
-**The gap**
-- Every session gets an expiry date 30 days out (proxy.start.tsx).
-- Nothing deletes anything when it passes. No job exists anywhere in the codebase.
-- Anonymous visitors have no customer id, so customers/redact can never reach them. This purge was meant to be their only deletion path.
-- The offer route returns an EXPIRED message for a lapsed session but never writes EXPIRED back, so abandoned sessions stay ACTIVE in the database forever.
-- Unless something outside the repo (a cron on EC2) already does it, sessions and offers pile up indefinitely in RDS.
+**Decision:** remove what identifies a shopper after 30 days, keep the record.
+Not delete whole negotiations, so per-store history and stats survive.
 
-**Fix path**
-- An hourly job started when the app boots (a timer inside the app process, no server setup needed).
-- Delete sessions where the expiry date has passed. Their offers go with them automatically.
-- Optionally mark them EXPIRED first so statuses are accurate.
-- If lifetime per-store totals are wanted, save counts to a small table before deleting (ties to item 2).
-- Backend only, no Shopify version release.
+**What the job does** (app/models/data-retention.server.ts, hourly, inside the app)
+- Marks negotiations past their 30 days as EXPIRED if they were still ACTIVE.
+- Clears customerId and anonymousId on negotiations past their 30 days.
+- Deletes rate-limit rows older than 1 hour (each is keyed by a shopper's IP).
+- Keeps: the negotiation rows, offers, prices, outcomes, draft order references, all merchant settings.
+- Never touches Shopify draft orders or orders. Uninstall deletion is still the shop/redact webhook.
+- Works in small batches. Logs counts only, never ids or IPs.
+
+**Status**
+- Built and tested locally on fake year-2000 records (22 checks, including multi-batch deletion and real data untouched). The test also caught a time-zone bug in a raw SQL date comparison, fixed by using Prisma's typed filter.
+- Ships with DRY_RUN = true: it only counts and changes nothing.
+- Privacy policy wording updated to match (section 1 IP line, section 3 retention lines).
+- Backend only. No Shopify version release.
+
+**To go live**
+- Deploy to EC2 (pull, rebuild, restart) with the policy change.
+- Check logs: docker logs <container> 2>&1 | grep data-retention
+- Expect: "scheduled every 60 minutes, mode: DRY RUN (changes nothing)".
+- Counts appear only when there is something to change. Nothing real is old enough before about October 17, 2026, so silence is expected until then.
+- Take a manual RDS snapshot first. The first live run cleans the whole backlog and can't be undone.
+- Set DRY_RUN to false in the file and redeploy.
+- Before and after, compare SELECT COUNT(*) FROM "NegotiationSession". The two numbers must match.
+
+**Still open**
+- A lawyer should confirm the policy wording, in particular that the remaining record counts as no longer identifying the shopper (it keeps a draft order reference).
+- Chats, when stored later, need to be cleared by this job at 30 days too.
+- The customers/data_request webhook still prints whole sessions into the container logs.
+- Logs and RDS backups keep older copies until they roll off.
 
 **Related**
-- Deleting a session never touches its Shopify draft order, by design. See item 1.
+- Deleting or scrubbing a session never touches its Shopify draft order, by design. See item 1.
 
 ## 4. Rules lookup should use the session's locked rule
 
