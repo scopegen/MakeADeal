@@ -64,7 +64,8 @@ export default function Privacy() {
           </li>
           <li>
             Your IP address, used only to apply rate limits that prevent
-            abuse of the negotiation feature.
+            abuse of the negotiation feature. It is deleted within about an
+            hour.
           </li>
         </ul>
 
@@ -104,9 +105,20 @@ export default function Privacy() {
         <h2>3. How long we keep it</h2>
         <ul>
           <li>
-            Negotiation session data (offers, counter-offers, and the
-            resulting outcome) is automatically deleted 30 days after the
-            negotiation starts.
+            Anything that identifies a shopper (a Shopify customer ID, or the
+            random identifier stored in the browser) is automatically removed
+            30 days after the negotiation starts.
+          </li>
+          <li>
+            After that, a record that no longer identifies the shopper
+            remains: the store, the product, the prices offered and agreed,
+            the outcome, the date, and a reference to the draft order created
+            in the merchant&apos;s own store. We keep it to understand how the
+            App is used, for as long as the merchant has the App installed.
+          </li>
+          <li>
+            IP addresses used for rate limiting are deleted within about an
+            hour.
           </li>
           <li>
             Merchant configuration and shop data is kept for as long as the
