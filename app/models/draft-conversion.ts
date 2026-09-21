@@ -3,8 +3,9 @@
 //
 // The rule: a draft order counts as CONVERTED only if it is COMPLETED and
 // still carries the "Noodle" tag. The tag is what proves it came from a Noodle
-// negotiation (see createNegotiatedDraftOrder in negotiation-engine.server.ts,
-// and the same tag used by draft-order-cleanup.server.ts).
+// negotiation (see createNegotiatedDraftOrder in negotiation-engine.server.ts).
+// Draft orders are deliberately never deleted by the app: they stay in the
+// merchant's Admin as a record, whether or not they were ever paid.
 //
 // Kept as its own file with no imports so it can be tested on its own.
 //
@@ -22,8 +23,8 @@ export type ConversionState =
   | "completed_untagged"
   | "open"
   | "invoice_sent"
-  // Shopify returned nothing for this id: the draft was deleted (by the
-  // cleanup job or a merchant), or it isn't readable.
+  // Shopify returned nothing for this id: the draft was deleted (the app
+  // never deletes them, so by a merchant), or it isn't readable.
   | "not_found"
   // Any status Shopify adds in future that we don't know about yet.
   | "other";

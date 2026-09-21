@@ -27,9 +27,69 @@ type AdminGraphqlClient = {
   ) => Promise<Response>;
 };
 
+const SHOP_NAME_TIMEOUT_MS = 5000;
+const SHOP_NAME_CONCURRENCY = 10;
+
+// A store's display name isn't stored anywhere (only its domain is), so it's
+// read live from the store through its saved offline token. Never throws:
+// any failure (uninstalled, token gone, Shopify slow or down) returns null and
+// the pages fall back to showing the domain. No permission needed beyond what
+// the app already has.
+async function lookupShopName(shopDomain: string): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("timed out")),
+      SHOP_NAME_TIMEOUT_MS,
+    );
+  });
+  try {
+    const { admin } = (await unauthenticated.admin(shopDomain)) as {
+      admin: AdminGraphqlClient;
+    };
+    const response = await Promise.race([
+      admin.graphql(`#graphql
+        query InternalShopName {
+          shop {
+            name
+          }
+        }`),
+      timeout,
+    ]);
+    const json = (await response.json()) as {
+      data?: { shop?: { name?: string } };
+    };
+    return json.data?.shop?.name?.trim() || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Looks names up a few stores at a time, so a long list of stores neither
+// runs one after another nor fires them all at once.
+async function lookupShopNames(
+  shopDomains: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  for (let i = 0; i < shopDomains.length; i += SHOP_NAME_CONCURRENCY) {
+    const batch = shopDomains.slice(i, i + SHOP_NAME_CONCURRENCY);
+    const results = await Promise.all(batch.map(lookupShopName));
+    batch.forEach((domain, index) => {
+      const name = results[index];
+      if (name) names.set(domain, name);
+    });
+  }
+  return names;
+}
+
 export type StoreOverviewRow = {
   shopId: string;
   shopDomain: string;
+  // The store's own name, or null if it couldn't be read (the pages then show
+  // the domain instead).
+  shopName: string | null;
   installedAt: Date;
   uninstalledAt: Date | null;
   total: number;
@@ -71,6 +131,12 @@ export async function getStoreOverview(): Promise<StoreOverviewRow[]> {
     lastByShop.set(row.shopId, row._max.createdAt);
   }
 
+  // Uninstalled stores have no usable token any more, so don't bother asking
+  // them for a name. They just show their domain.
+  const names = await lookupShopNames(
+    shops.filter((s) => !s.uninstalledAt).map((s) => s.shopDomain),
+  );
+
   return shops
     .map((shop) => {
       const counts = countsByShop.get(shop.id) ?? {};
@@ -81,6 +147,7 @@ export async function getStoreOverview(): Promise<StoreOverviewRow[]> {
       return {
         shopId: shop.id,
         shopDomain: shop.shopDomain,
+        shopName: names.get(shop.shopDomain) ?? null,
         installedAt: shop.installedAt,
         uninstalledAt: shop.uninstalledAt,
         total: accepted + declined + active + expired,
@@ -147,6 +214,8 @@ export type StoreDetail = {
   shop: {
     id: string;
     shopDomain: string;
+    // The store's own name, or null if it couldn't be read.
+    name: string | null;
     installedAt: Date;
     uninstalledAt: Date | null;
   };
@@ -386,6 +455,11 @@ export async function getStoreDetail(
     },
   });
 
+  // Not asked for an uninstalled store: its token is gone.
+  const shopName = shop.uninstalledAt
+    ? null
+    : await lookupShopName(shop.shopDomain);
+
   const { titles, error: productNamesError } = await lookupProductTitles(
     shop.shopDomain,
     aggRows.slice(0, PRODUCT_TITLE_LOOKUP_LIMIT).map((r) => r.productId),
@@ -477,7 +551,7 @@ export async function getStoreDetail(
   conversion.acceptedTotal = accepted;
 
   return {
-    shop,
+    shop: { ...shop, name: shopName },
     currency: recentSessions.find((s) => s.currencyCode)?.currencyCode ?? "",
     totals: {
       total,

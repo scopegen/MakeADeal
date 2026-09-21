@@ -74,7 +74,7 @@ export default function InternalStoreDetail() {
   ];
 
   return (
-    <s-page heading={shop.shopDomain}>
+    <s-page heading={shop.name ?? shop.shopDomain}>
       <s-section>
         <s-link href="/app/internal">Back to all stores</s-link>
       </s-section>
@@ -98,7 +98,8 @@ export default function InternalStoreDetail() {
 
       <s-section heading="Summary">
         <s-paragraph>
-          Installed {new Date(shop.installedAt).toLocaleDateString()}
+          Domain {shop.shopDomain}. Installed{" "}
+          {new Date(shop.installedAt).toLocaleDateString()}
           {shop.uninstalledAt
             ? `, uninstalled ${new Date(shop.uninstalledAt).toLocaleDateString()}`
             : ""}

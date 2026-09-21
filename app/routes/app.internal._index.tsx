@@ -58,7 +58,7 @@ export default function InternalStores() {
               {stores.map((s) => (
                 <s-table-row key={s.shopId}>
                   <s-table-cell>
-                    {s.shopDomain}{" "}
+                    {s.shopName ?? s.shopDomain}{" "}
                     {s.isInternal && <s-badge tone="info">yours</s-badge>}
                   </s-table-cell>
                   <s-table-cell>
