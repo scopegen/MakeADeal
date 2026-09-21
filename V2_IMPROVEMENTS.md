@@ -3,34 +3,31 @@
 Improvements to things that already exist, kept separate from V2_ROADMAP.md
 (which lists new features). Not in priority order. Add items as they come up.
 
-## 1. Draft order cleanup: go live
+## 1. Draft orders are kept: no automatic deletion (decision)
 
-Abandoned negotiated draft orders are deleted after 24 hours. Built and pushed
-(commit c3c3f8f), currently running in dry-run mode, which only logs.
+Decided not to delete abandoned negotiated draft orders. They stay in the
+merchant's Shopify Admin (Draft orders) as a record of every accepted
+negotiation, paid or not.
 
-**What it touches, and nothing else**
-- Only drafts tagged Noodle.
-- Only drafts still OPEN.
-- Only drafts created more than 24 hours ago.
-- Hourly, capped at 100 per shop per run.
-- Tag, status, and age are re-checked in code after Shopify's search.
+**What happened**
+- An hourly cleanup was built (commit c3c3f8f) to delete Noodle-tagged open drafts after 24 hours.
+- It only ever ran in dry-run mode, which logs and deletes nothing, so no draft order was ever deleted.
+- It was then removed entirely. The app never deletes a draft order.
 
-**To go live**
-- Deploy to EC2 (pull, rebuild, restart). No Shopify version release.
-- Check logs: docker logs <container> 2>&1 | grep draft-cleanup
-- Expect: "scheduled every 60 minutes, mode: DRY RUN (deletes nothing)".
-- After about a day, compare the "would delete" lines with Noodle-tagged open drafts in Shopify Admin.
-- If they match, set DRY_RUN to false in app/models/draft-order-cleanup.server.ts and redeploy.
-
-**Follow-ups**
-- Drafts created before Sept 18, 2026 have no tag and are never matched. Clear those by hand in Admin.
-- Invoice-sent drafts are deliberately left alone. Decide later if they should go too.
-- Shopify's docs only showed the OPEN status. Confirm the other status names before ever widening this.
-- Age counts from creation. A merchant who edits a Noodle draft and leaves it open past 24 hours will still lose it.
-- Sessions store a 48 hour draftOrderExpiresAt that nothing reads. Remove it or leave it.
-- Update the project history doc, it still says this cleanup was never built.
+**What this means**
+- Unpaid drafts pile up in each merchant's Draft orders list. Every one is tagged Noodle, so a merchant can filter and clear them by hand.
+- The internal stats pages show drafts as converted, open, invoice sent, or not found. "Not found" now means a merchant deleted it, since the app doesn't.
+- Sessions still store a 48 hour draftOrderExpiresAt that nothing reads. Harmless. Remove it or leave it.
+- Revisit only if merchants complain about clutter. If so, make it an opt-in setting per merchant, not a default.
 
 ## 2. Per-store negotiation records on the backend
+
+**Status: built** as the internal stats pages (commit 77d04a4), inside the
+app at /app/internal, visible only from the stores on the allowlist
+(sg-noida.myshopify.com by default). It lists every store, with a per-store
+page showing products, prices, conversions, and sales windows. Store names are
+read live from each store. What is below is the original scoping, and the
+open decisions still apply.
 
 See which store has how many negotiations. The data already exists in
 NegotiationSession (shop id, status, created date) and Shop (domain).
@@ -76,14 +73,14 @@ deleted 30 days after it starts. The code does not do this.
 - Unless something outside the repo (a cron on EC2) already does it, sessions and offers pile up indefinitely in RDS.
 
 **Fix path**
-- An hourly job using the same timer pattern as the draft order cleanup.
+- An hourly job started when the app boots (a timer inside the app process, no server setup needed).
 - Delete sessions where the expiry date has passed. Their offers go with them automatically.
 - Optionally mark them EXPIRED first so statuses are accurate.
 - If lifetime per-store totals are wanted, save counts to a small table before deleting (ties to item 2).
 - Backend only, no Shopify version release.
 
 **Related**
-- Deleting a session does not delete its Shopify draft order. That is item 1.
+- Deleting a session never touches its Shopify draft order, by design. See item 1.
 
 ## 4. Rules lookup should use the session's locked rule
 
