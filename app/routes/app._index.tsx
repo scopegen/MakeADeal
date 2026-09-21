@@ -3,15 +3,32 @@ import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { getShopByDomain } from "../models/negotiation-settings.server";
+import {
+  NEGOTIATIONS_PAGE_SIZE,
+  getPageWindow,
+} from "../models/pagination";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = await getShopByDomain(session.shop);
 
+  // 50 negotiations per page, newest first, paged with ?page=2 and so on.
+  const total = await prisma.negotiationSession.count({
+    where: { shopId: shop.id },
+  });
+  const pageWindow = getPageWindow(
+    total,
+    new URL(request.url).searchParams.get("page"),
+    NEGOTIATIONS_PAGE_SIZE,
+  );
+
+  // id is only a tie-breaker, so two negotiations created in the same instant
+  // can never swap places or repeat between pages.
   const sessions = await prisma.negotiationSession.findMany({
     where: { shopId: shop.id },
-    orderBy: { createdAt: "desc" },
-    take: 50,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    skip: pageWindow.skip,
+    take: NEGOTIATIONS_PAGE_SIZE,
   });
 
   // Product titles aren't stored on the session (only productId is, same
@@ -54,12 +71,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // never visually updating, not anything in the Rules routes themselves).
   // Converting to plain strings here means server and client always agree.
   return {
+    // Only the fields the page shows, not the whole row: a row also carries
+    // the shopper's customer id or browser id, which has no reason to be sent
+    // to the browser.
     sessions: sessions.map((s) => ({
-      ...s,
+      id: s.id,
+      status: s.status,
+      createdAt: s.createdAt,
       productTitle: titleById.get(s.productId) ?? s.productId,
       startingPrice: s.startingPrice.toString(),
       currentOfferPrice: s.currentOfferPrice?.toString() ?? null,
     })),
+    total,
+    page: pageWindow.page,
+    totalPages: pageWindow.totalPages,
+    hasPrevious: pageWindow.hasPrevious,
+    hasNext: pageWindow.hasNext,
+    firstShown: sessions.length === 0 ? 0 : pageWindow.skip + 1,
+    lastShown: pageWindow.skip + sessions.length,
   };
 };
 
@@ -74,7 +103,16 @@ const STATUS_TONE: Record<
 };
 
 export default function NegotiationsLog() {
-  const { sessions } = useLoaderData<typeof loader>();
+  const {
+    sessions,
+    total,
+    page,
+    totalPages,
+    hasPrevious,
+    hasNext,
+    firstShown,
+    lastShown,
+  } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Negotiations">
@@ -123,6 +161,37 @@ export default function NegotiationsLog() {
               ))}
             </s-table-body>
           </s-table>
+        )}
+
+        {/* Only shown when there is more than one page, like Shopify's own
+            lists. Plain links to ?page=N rather than the table's built-in
+            pagination events, which React 18 doesn't wire up for custom
+            elements. A disabled arrow has no link at all. */}
+        {totalPages > 1 && (
+          <s-stack
+            direction="inline"
+            gap="base"
+            alignItems="center"
+            justifyContent="space-between"
+          >
+            <s-paragraph>
+              Showing {firstShown} to {lastShown} of {total}
+            </s-paragraph>
+            <s-stack direction="inline" gap="small" alignItems="center">
+              <s-button
+                icon="chevron-left"
+                accessibilityLabel="Previous page"
+                href={hasPrevious ? `/app?page=${page - 1}` : undefined}
+                disabled={!hasPrevious || undefined}
+              ></s-button>
+              <s-button
+                icon="chevron-right"
+                accessibilityLabel="Next page"
+                href={hasNext ? `/app?page=${page + 1}` : undefined}
+                disabled={!hasNext || undefined}
+              ></s-button>
+            </s-stack>
+          </s-stack>
         )}
       </s-section>
     </s-page>
