@@ -373,8 +373,9 @@ export default function NegotiationsLog() {
           <s-popover
             id={DATE_RANGE_POPOVER_ID}
             onShow={resetPendingRangeToCurrentFilter}
+            inlineSize="640px"
           >
-            <s-box padding="base" minInlineSize="480px">
+            <s-box padding="base">
               <s-stack direction="inline" gap="large">
                 <s-stack direction="block" gap="small-200">
                   <s-button
@@ -442,6 +443,10 @@ export default function NegotiationsLog() {
           <Tile label="Converted" value={converted} />
           <Tile label="Conversion rate" value={percentLabel(conversionRate)} />
         </s-stack>
+
+        <s-box paddingBlock="base">
+          <s-divider></s-divider>
+        </s-box>
 
         {sessions.length === 0 ? (
           <s-stack direction="block" gap="base" alignItems="center">
