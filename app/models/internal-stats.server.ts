@@ -4,9 +4,13 @@ import {
   classifyDraftOrder,
   salesByWindow,
   type ConversionState,
-  type DraftOrderState,
   type SalesWindows,
 } from "./draft-conversion";
+import {
+  lookupDraftOrderStates as lookupDraftOrderStatesWithClient,
+  type AdminGraphqlClient,
+  type DraftStatesResult,
+} from "./draft-order-lookup.server";
 
 // Read-only queries behind the internal stats pages (/app/internal). Only
 // ever called from routes that have already passed requireInternalShop().
@@ -18,14 +22,6 @@ import {
 // Numbers come from live NegotiationSession rows. Sessions currently never
 // get purged, so these are effectively all-time totals today; once the 30-day
 // purge exists they will only cover the last 30 days.
-
-// Same minimal structural type the negotiation engine uses.
-type AdminGraphqlClient = {
-  graphql: (
-    query: string,
-    options?: { variables?: Record<string, unknown> },
-  ) => Promise<Response>;
-};
 
 const SHOP_NAME_TIMEOUT_MS = 5000;
 const SHOP_NAME_CONCURRENCY = 10;
@@ -319,87 +315,19 @@ async function lookupProductTitles(
 // the page says so.
 const CONVERSION_LOOKUP_LIMIT = 500;
 
-type DraftStatesResult = {
-  // Keyed by draft order id. A null value means Shopify returned nothing for
-  // that id (deleted or unreadable). An id that is absent from the map was
-  // never looked up at all, which is a different thing.
-  states: Map<string, DraftOrderState | null>;
-  error: string | null;
-};
-
-// Reads status, tags, and completion date of the draft orders behind accepted
-// negotiations, through the store's saved offline token. Needs only
-// read_draft_orders, no access to orders. Batched 100 ids per call.
+// Thin wrapper: gets this store's own admin client (this page works across
+// arbitrary shops via their saved offline tokens, unlike the merchant-facing
+// Negotiations page, which already has its own authenticated client), then
+// delegates to the actual lookup logic shared with that page.
 async function lookupDraftOrderStates(
   shopDomain: string,
   draftOrderIds: string[],
 ): Promise<DraftStatesResult> {
-  const states = new Map<string, DraftOrderState | null>();
-  if (draftOrderIds.length === 0) return { states, error: null };
-
-  try {
-    const { admin } = (await unauthenticated.admin(shopDomain)) as {
-      admin: AdminGraphqlClient;
-    };
-    for (let i = 0; i < draftOrderIds.length; i += 100) {
-      const chunk = draftOrderIds.slice(i, i + 100);
-      const response = await admin.graphql(
-        `#graphql
-        query InternalDraftOrderStates($ids: [ID!]!) {
-          nodes(ids: $ids) {
-            ... on DraftOrder {
-              id
-              status
-              tags
-              completedAt
-            }
-          }
-        }`,
-        { variables: { ids: chunk } },
-      );
-      const json = (await response.json()) as {
-        data?: {
-          nodes: (
-            | {
-                id: string;
-                status: string;
-                tags: string[];
-                completedAt: string | null;
-              }
-            | null
-          )[];
-        };
-        errors?: { message: string }[];
-      };
-      if (!json.data) {
-        throw new Error(
-          json.errors?.map((e) => e.message).join("; ") ?? "no data returned",
-        );
-      }
-      // Matched back to the ids by id, not by position, so this never
-      // depends on result ordering. Anything Shopify couldn't find comes back
-      // as null (no id at all), so it simply won't be in this map.
-      const found = new Map<string, DraftOrderState>();
-      for (const node of json.data.nodes) {
-        if (node && node.id) {
-          found.set(node.id, {
-            status: node.status,
-            tags: node.tags,
-            completedAt: node.completedAt ? new Date(node.completedAt) : null,
-          });
-        }
-      }
-      for (const id of chunk) states.set(id, found.get(id) ?? null);
-    }
-    return { states, error: null };
-  } catch (err) {
-    // A failed lookup must not be read as "not converted": return whatever
-    // was fetched before the failure, and let the caller flag the error.
-    return {
-      states,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  if (draftOrderIds.length === 0) return { states: new Map(), error: null };
+  const { admin } = (await unauthenticated.admin(shopDomain)) as {
+    admin: AdminGraphqlClient;
+  };
+  return lookupDraftOrderStatesWithClient(admin, draftOrderIds);
 }
 
 export async function getStoreDetail(

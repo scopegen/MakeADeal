@@ -60,6 +60,42 @@ export function classifyDraftOrder(
   }
 }
 
+export type ConversionSummary = {
+  // How many of the given negotiations were actually checked against
+  // Shopify (a failed lookup can mean fewer than the input length), and how
+  // many of those came back converted.
+  checked: number;
+  converted: number;
+  // converted / accepted, as a percentage, or null if there were no accepted
+  // negotiations to divide by (never NaN or a divide-by-zero artifact).
+  rate: number | null;
+};
+
+// Tallies conversions for a set of accepted negotiations against their
+// looked-up draft order states. acceptedCount is the real total of accepted
+// negotiations (the rate's denominator) - it can be larger than
+// draftOrderIds.length if some accepted negotiations have no draft order id
+// at all, or larger than what was actually checked if the lookup was capped
+// or partially failed.
+export function summarizeConversions(
+  draftOrderIds: string[],
+  draftStates: Map<string, DraftOrderState | null>,
+  acceptedCount: number,
+): ConversionSummary {
+  let checked = 0;
+  let converted = 0;
+  for (const id of draftOrderIds) {
+    if (!draftStates.has(id)) continue; // never looked up (lookup failed before reaching it)
+    checked++;
+    if (classifyDraftOrder(draftStates.get(id)) === "converted") converted++;
+  }
+  return {
+    checked,
+    converted,
+    rate: acceptedCount > 0 ? (converted / acceptedCount) * 100 : null,
+  };
+}
+
 export type SalesWindow = { orders: number; value: number };
 
 export type SalesWindows = {

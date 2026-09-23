@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import type { LoaderFunctionArgs } from "react-router";
+import { useState } from "react";
 import { useLoaderData, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
@@ -17,6 +18,16 @@ import {
   resolveTimezone,
   type DatePreset,
 } from "../models/date-range";
+import { summarizeConversions } from "../models/draft-conversion";
+import { lookupDraftOrderStates } from "../models/draft-order-lookup.server";
+
+// How many of the most recent accepted negotiations (within whatever date
+// filter is active) to check against Shopify for conversion. Bounds the
+// number of API calls (100 ids per call) so a busy store filtered to a busy
+// range doesn't make this page noticeably slow to load. Older accepted deals
+// beyond this cap are simply left out of the Converted / Conversion rate
+// tiles - same cap and same reasoning as the internal stats page.
+const CONVERSION_LOOKUP_LIMIT = 100;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -73,6 +84,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     else if (row.status === "DECLINED") counts.declined = row._count._all;
     else if (row.status === "EXPIRED") counts.expired = row._count._all;
   }
+
+  // Converted: of the accepted negotiations in view, how many actually
+  // completed into a real order in Shopify, checked live (never stored,
+  // draft order status can change after the fact). Respects the same date
+  // filter as everything else on this page. A failed lookup must not be
+  // read as "0 converted" - convertedLookupError lets the page say so
+  // honestly instead of silently showing a wrong number.
+  const acceptedForConversion = await prisma.negotiationSession.findMany({
+    where: { ...where, status: "ACCEPTED", draftOrderId: { not: null } },
+    orderBy: { createdAt: "desc" },
+    take: CONVERSION_LOOKUP_LIMIT,
+    select: { draftOrderId: true },
+  });
+  const draftOrderIds = acceptedForConversion.map(
+    (s) => s.draftOrderId as string,
+  );
+  const { states: draftStates, error: convertedLookupError } =
+    await lookupDraftOrderStates(admin, draftOrderIds);
+  const { checked: convertedChecked, converted, rate: conversionRate } =
+    summarizeConversions(draftOrderIds, draftStates, counts.accepted);
 
   // 50 negotiations per page, newest first, paged with ?page=2 and so on.
   // Uses counts.total (already scoped by the same where, date filter
@@ -151,6 +182,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     firstShown: sessions.length === 0 ? 0 : pageWindow.skip + 1,
     lastShown: pageWindow.skip + sessions.length,
     counts,
+    converted,
+    conversionRate,
+    // Set only when the live Shopify check genuinely failed partway - not
+    // when there was simply nothing to check (0 accepted negotiations),
+    // which isn't an error at all.
+    convertedLookupError:
+      convertedLookupError && convertedChecked < acceptedForConversion.length
+        ? convertedLookupError
+        : null,
     // Echoed back so the picker and the "showing X to Y" line reflect
     // exactly what was applied (already clamped to the last 30 days),
     // not raw, unclamped query params.
@@ -185,7 +225,7 @@ const STATUS_TONE: Record<
   EXPIRED: "neutral",
 };
 
-function Tile({ label, value }: { label: string; value: number }) {
+function Tile({ label, value }: { label: string; value: string | number }) {
   return (
     <s-box padding="base" border="base" borderRadius="base" minInlineSize="112px">
       <s-stack direction="block" gap="small-200">
@@ -194,6 +234,39 @@ function Tile({ label, value }: { label: string; value: number }) {
       </s-stack>
     </s-box>
   );
+}
+
+const DATE_RANGE_POPOVER_ID = "negotiations-date-range-popover";
+
+// Closes the popover the same native way its own trigger button opens it
+// (s-popover's show/hide events line up with the browser's own Popover API,
+// per its docs) - used from Apply/Cancel/preset handlers, none of which can
+// use the declarative command/commandFor attributes for this themselves,
+// since those buttons already navigate via onClick, and Shopify's own docs
+// say a commandFor on a button REPLACES its href/navigation rather than
+// running alongside it.
+function closeDateRangePopover() {
+  const el = document.getElementById(DATE_RANGE_POPOVER_ID) as
+    | (HTMLElement & { hidePopover?: () => void })
+    | null;
+  el?.hidePopover?.();
+}
+
+// "2026-09-21" -> "Sep 21, 2026". Formatted in UTC deliberately: the string
+// is a plain calendar-day label already resolved in the store's own
+// timezone server-side, not a real instant - letting the browser reinterpret
+// it in the viewer's own local timezone could silently shift it by a day.
+function formatDateLabel(dateKey: string): string {
+  return new Date(`${dateKey}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function percentLabel(value: number | null): string {
+  return value === null ? "-" : `${value.toFixed(1)}%`;
 }
 
 export default function NegotiationsLog() {
@@ -206,12 +279,30 @@ export default function NegotiationsLog() {
     firstShown,
     lastShown,
     counts,
+    converted,
+    conversionRate,
+    convertedLookupError,
     dateFilter,
     allowedWindow,
     activePreset,
     timeZone,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
+
+  // The calendar's own in-progress selection, staged until Apply is clicked.
+  // Presets apply immediately instead (see applyPreset) and don't touch this.
+  // Reset from the real applied filter each time the popover actually opens
+  // (the popover's own show event, not an effect reacting to loader data -
+  // setting state directly inside an effect body is exactly the render-
+  // cascade pattern this project's own lint rules already reject elsewhere),
+  // so opening it always starts from the current filter, never a leftover
+  // half-made selection from a previous open.
+  const [pendingRange, setPendingRange] = useState(
+    dateFilter ? `${dateFilter.from}--${dateFilter.to}` : "",
+  );
+  function resetPendingRangeToCurrentFilter() {
+    setPendingRange(dateFilter ? `${dateFilter.from}--${dateFilter.to}` : "");
+  }
 
   // Carries the current date filter along on a page-turn, so paging never
   // silently drops it.
@@ -225,20 +316,44 @@ export default function NegotiationsLog() {
     return `/app?${params.toString()}`;
   }
 
+  // Presets (including "All time") apply the moment they're clicked, no
+  // separate Apply needed, since there's nothing ambiguous about them.
   // Computed with the store's own timezone (already resolved server-side),
   // so "Today" means today in the merchant's own store, not the server's.
-  function presetHref(preset: DatePreset): string {
+  function applyPreset(preset: DatePreset | "all") {
+    closeDateRangePopover();
+    if (preset === "all") {
+      navigate("/app");
+      return;
+    }
     const { from, to } = getPresetRange(preset, timeZone);
-    return `/app?from=${from}&to=${to}`;
+    navigate(`/app?from=${from}&to=${to}`);
   }
 
-  // Fires once a full range is picked (Shopify's docs: onChange for a range
-  // picker fires "when a range is completed by selecting the end date", not
-  // on the first click) - so this never navigates on a half-made selection.
+  // Only stages the selection - Shopify's docs: onChange for a range picker
+  // fires "when a range is completed by selecting the end date", not on the
+  // first click, so this never stages a half-made range either.
   function handleRangeChange(event: FieldChangeEvent) {
-    const [from, to] = event.currentTarget.value.split("--");
-    if (from && to) navigate(`/app?from=${from}&to=${to}`);
+    setPendingRange(event.currentTarget.value);
   }
+
+  function applyCustomRange() {
+    const [from, to] = pendingRange.split("--");
+    if (!from || !to) return;
+    closeDateRangePopover();
+    navigate(`/app?from=${from}&to=${to}`);
+  }
+
+  function cancelCustomRange() {
+    setPendingRange(dateFilter ? `${dateFilter.from}--${dateFilter.to}` : "");
+    closeDateRangePopover();
+  }
+
+  const currentRangeLabel = dateFilter
+    ? dateFilter.from === dateFilter.to
+      ? formatDateLabel(dateFilter.from)
+      : `${formatDateLabel(dateFilter.from)} - ${formatDateLabel(dateFilter.to)}`
+    : "All time";
 
   return (
     <s-page heading="Negotiations">
@@ -251,35 +366,72 @@ export default function NegotiationsLog() {
           </s-paragraph>
         </s-banner>
 
-        <s-section heading="Filter by date">
-          <s-paragraph color="subdued">
-            Covers up to the last 30 days ({allowedWindow.minDate} to{" "}
-            {allowedWindow.maxDate}).
-          </s-paragraph>
-          <s-stack direction="inline" gap="small" alignItems="center">
-            <s-button
-              variant={!dateFilter ? "primary" : undefined}
-              href="/app"
-            >
-              All time
-            </s-button>
-            {PRESETS.map((preset) => (
-              <s-button
-                key={preset.key}
-                variant={activePreset === preset.key ? "primary" : undefined}
-                href={presetHref(preset.key)}
-              >
-                {preset.label}
-              </s-button>
-            ))}
-            <s-date-picker
-              type="range"
-              allow={`${allowedWindow.minDate}--${allowedWindow.maxDate}`}
-              value={dateFilter ? `${dateFilter.from}--${dateFilter.to}` : ""}
-              onChange={handleRangeChange}
-            ></s-date-picker>
-          </s-stack>
+        <s-section>
+          <s-button commandFor={DATE_RANGE_POPOVER_ID} icon="calendar">
+            {currentRangeLabel}
+          </s-button>
+          <s-popover
+            id={DATE_RANGE_POPOVER_ID}
+            onShow={resetPendingRangeToCurrentFilter}
+          >
+            <s-box padding="base" minInlineSize="480px">
+              <s-stack direction="inline" gap="large">
+                <s-stack direction="block" gap="small-200">
+                  <s-button
+                    variant={!dateFilter ? "primary" : undefined}
+                    onClick={() => applyPreset("all")}
+                  >
+                    All time
+                  </s-button>
+                  {PRESETS.map((preset) => (
+                    <s-button
+                      key={preset.key}
+                      variant={
+                        activePreset === preset.key ? "primary" : undefined
+                      }
+                      onClick={() => applyPreset(preset.key)}
+                    >
+                      {preset.label}
+                    </s-button>
+                  ))}
+                </s-stack>
+
+                <s-stack direction="block" gap="small">
+                  <s-paragraph color="subdued">
+                    Custom range, up to the last 30 days (
+                    {formatDateLabel(allowedWindow.minDate)} to{" "}
+                    {formatDateLabel(allowedWindow.maxDate)}).
+                  </s-paragraph>
+                  <s-date-picker
+                    type="range"
+                    allow={`${allowedWindow.minDate}--${allowedWindow.maxDate}`}
+                    value={pendingRange}
+                    onChange={handleRangeChange}
+                  ></s-date-picker>
+                  <s-stack direction="inline" gap="small">
+                    <s-button
+                      variant="primary"
+                      disabled={!pendingRange.includes("--") || undefined}
+                      onClick={applyCustomRange}
+                    >
+                      Apply
+                    </s-button>
+                    <s-button onClick={cancelCustomRange}>Cancel</s-button>
+                  </s-stack>
+                </s-stack>
+              </s-stack>
+            </s-box>
+          </s-popover>
         </s-section>
+
+        {convertedLookupError && (
+          <s-banner tone="warning" heading="Converted count may be incomplete">
+            <s-paragraph>
+              Could not fully check order status with Shopify just now:{" "}
+              {convertedLookupError}
+            </s-paragraph>
+          </s-banner>
+        )}
 
         <s-stack direction="inline" gap="base">
           <Tile label="Total" value={counts.total} />
@@ -287,6 +439,8 @@ export default function NegotiationsLog() {
           <Tile label="Accepted" value={counts.accepted} />
           <Tile label="Declined" value={counts.declined} />
           <Tile label="Expired" value={counts.expired} />
+          <Tile label="Converted" value={converted} />
+          <Tile label="Conversion rate" value={percentLabel(conversionRate)} />
         </s-stack>
 
         {sessions.length === 0 ? (
