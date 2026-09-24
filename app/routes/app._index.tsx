@@ -13,10 +13,7 @@ import {
   getAllowedWindow,
   parseDateFilter,
   dateFilterToBounds,
-  matchingPreset,
-  getPresetRange,
   resolveTimezone,
-  type DatePreset,
 } from "../models/date-range";
 import { summarizeConversions } from "../models/draft-conversion";
 import { lookupDraftOrderStates } from "../models/draft-order-lookup.server";
@@ -196,18 +193,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // not raw, unclamped query params.
     dateFilter,
     allowedWindow,
-    activePreset: matchingPreset(dateFilter, timeZone),
     timeZone,
   };
 };
-
-// One link per preset, plus "All time" to clear the filter entirely.
-const PRESETS: { key: DatePreset; label: string }[] = [
-  { key: "today", label: "Today" },
-  { key: "yesterday", label: "Yesterday" },
-  { key: "last7", label: "Last 7 days" },
-  { key: "last30", label: "Last 30 days" },
-];
 
 // Same event shape already used on the Rules editor's own controlled fields
 // (Shopify's s-* web components don't reliably do native form submission in
@@ -284,8 +272,6 @@ export default function NegotiationsLog() {
     convertedLookupError,
     dateFilter,
     allowedWindow,
-    activePreset,
-    timeZone,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
@@ -314,20 +300,6 @@ export default function NegotiationsLog() {
     }
     params.set("page", String(targetPage));
     return `/app?${params.toString()}`;
-  }
-
-  // Presets (including "All time") apply the moment they're clicked, no
-  // separate Apply needed, since there's nothing ambiguous about them.
-  // Computed with the store's own timezone (already resolved server-side),
-  // so "Today" means today in the merchant's own store, not the server's.
-  function applyPreset(preset: DatePreset | "all") {
-    closeDateRangePopover();
-    if (preset === "all") {
-      navigate("/app");
-      return;
-    }
-    const { from, to } = getPresetRange(preset, timeZone);
-    navigate(`/app?from=${from}&to=${to}`);
   }
 
   // Only stages the selection - Shopify's docs: onChange for a range picker
@@ -373,52 +345,30 @@ export default function NegotiationsLog() {
           <s-popover
             id={DATE_RANGE_POPOVER_ID}
             onShow={resetPendingRangeToCurrentFilter}
-            inlineSize="640px"
+            inlineSize="420px"
           >
             <s-box padding="base">
-              <s-stack direction="inline" gap="large">
-                <s-stack direction="block" gap="small-200">
+              <s-stack direction="block" gap="small">
+                <s-paragraph color="subdued">
+                  Custom range, up to the last 30 days (
+                  {formatDateLabel(allowedWindow.minDate)} to{" "}
+                  {formatDateLabel(allowedWindow.maxDate)}).
+                </s-paragraph>
+                <s-date-picker
+                  type="range"
+                  allow={`${allowedWindow.minDate}--${allowedWindow.maxDate}`}
+                  value={pendingRange}
+                  onChange={handleRangeChange}
+                ></s-date-picker>
+                <s-stack direction="inline" gap="small">
                   <s-button
-                    variant={!dateFilter ? "primary" : undefined}
-                    onClick={() => applyPreset("all")}
+                    variant="primary"
+                    disabled={!pendingRange.includes("--") || undefined}
+                    onClick={applyCustomRange}
                   >
-                    All time
+                    Apply
                   </s-button>
-                  {PRESETS.map((preset) => (
-                    <s-button
-                      key={preset.key}
-                      variant={
-                        activePreset === preset.key ? "primary" : undefined
-                      }
-                      onClick={() => applyPreset(preset.key)}
-                    >
-                      {preset.label}
-                    </s-button>
-                  ))}
-                </s-stack>
-
-                <s-stack direction="block" gap="small">
-                  <s-paragraph color="subdued">
-                    Custom range, up to the last 30 days (
-                    {formatDateLabel(allowedWindow.minDate)} to{" "}
-                    {formatDateLabel(allowedWindow.maxDate)}).
-                  </s-paragraph>
-                  <s-date-picker
-                    type="range"
-                    allow={`${allowedWindow.minDate}--${allowedWindow.maxDate}`}
-                    value={pendingRange}
-                    onChange={handleRangeChange}
-                  ></s-date-picker>
-                  <s-stack direction="inline" gap="small">
-                    <s-button
-                      variant="primary"
-                      disabled={!pendingRange.includes("--") || undefined}
-                      onClick={applyCustomRange}
-                    >
-                      Apply
-                    </s-button>
-                    <s-button onClick={cancelCustomRange}>Cancel</s-button>
-                  </s-stack>
+                  <s-button onClick={cancelCustomRange}>Cancel</s-button>
                 </s-stack>
               </s-stack>
             </s-box>

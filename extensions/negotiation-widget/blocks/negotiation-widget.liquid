@@ -36,6 +36,7 @@
   data-shop="{{ shop.permanent_domain }}"
   data-page-type="{{ request.page_type }}"
   {% if product %}data-product-id="gid://shopify/Product/{{ product.id }}"{% endif %}
+  {% if product %}data-variant-id="gid://shopify/ProductVariant/{{ product.selected_or_first_available_variant.id }}"{% endif %}
   {{ block.shopify_attributes }}
 ></div>
 <script src="{{ 'negotiation-widget.js' | asset_url }}" defer></script>

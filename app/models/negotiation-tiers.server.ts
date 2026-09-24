@@ -293,6 +293,18 @@ const ACCEPTED_COPIES = [
   "I'm happy to accept {{accepted_price}}. Let's make it yours.",
 ];
 
+// Shown instead of ACCEPTED_COPIES when the customer's own offer was at or
+// above the real listed price - see evaluateSegmentedOffer's acceptedResult:
+// the price used is always capped at the real listed price, never the
+// (possibly much higher) number the customer actually typed, so this copy
+// says so plainly rather than pretending a "negotiation" happened.
+const AT_LIST_PRICE_COPIES = [
+  "That's already our listed price of {{accepted_price}} - no negotiating needed there. I can get that ready for you right away.",
+  "Looks like {{accepted_price}} is already the full price - happy to lock that in for you now.",
+  "You're already at our listed price of {{accepted_price}}, so there's nothing to negotiate. Let's get you checked out.",
+  "That's the full price, {{accepted_price}} - I can set that up for you right now.",
+];
+
 const NO_PRICE_COPIES = [
   "I'd be happy to negotiate. What price did you have in mind?",
   "Let's see if we can find a price that works for you. What would you like to offer?",
@@ -327,6 +339,10 @@ export function getAcceptedMessage(price: number) {
   return fill(pick(ACCEPTED_COPIES), "accepted_price", price);
 }
 
+export function getAcceptedAtListPriceMessage(price: number) {
+  return fill(pick(AT_LIST_PRICE_COPIES), "accepted_price", price);
+}
+
 // Classifies on the customer's first valid offer only - never called again
 // for the same session. D = max discount amount (list price's worth of the
 // max discount %, in currency units, not a percentage). Bands are multiples
@@ -349,8 +365,37 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
+// The actual bug fix: an offer high enough to accept was previously accepted
+// AT WHATEVER NUMBER THE CUSTOMER TYPED, with no ceiling check against the
+// real listed price - a customer typing far more than the item costs (a
+// typo, a stray number, anything) got a draft order created at that inflated
+// number. Capped here at startingPrice instead, with a flag so the caller
+// can use different, honest copy for that case rather than pretending a
+// negotiation happened.
+function acceptedResult(
+  visitorOfferPrice: number,
+  startingPrice: number,
+): { outcome: "ACCEPTED"; price: number; atOrAboveListPrice: boolean } {
+  if (visitorOfferPrice >= startingPrice) {
+    return {
+      outcome: "ACCEPTED",
+      price: round2(startingPrice),
+      atOrAboveListPrice: true,
+    };
+  }
+  return {
+    outcome: "ACCEPTED",
+    price: round2(visitorOfferPrice),
+    atOrAboveListPrice: false,
+  };
+}
+
 export type SegmentedEvaluation =
-  | { outcome: "ACCEPTED"; price: number }
+  // atOrAboveListPrice: true when the customer's own typed number was at or
+  // above the real listed price - price is then capped at the listed price
+  // itself, never the (possibly much higher) number they actually typed. See
+  // acceptedResult below.
+  | { outcome: "ACCEPTED"; price: number; atOrAboveListPrice: boolean }
   // Only reachable at tier 1 of Too-Low (see the noPrice flag on Tier) -
   // a conversational nudge with no price attached at all, nothing to log
   // as an offer or show as a current price yet.
@@ -384,7 +429,7 @@ export function evaluateSegmentedOffer(
   // Anything at or above the floor is accepted immediately, at any round,
   // in any segment - never negotiated further. See the module comment.
   if (visitorOfferPrice >= floorPrice) {
-    return { outcome: "ACCEPTED", price: round2(visitorOfferPrice) };
+    return acceptedResult(visitorOfferPrice, startingPrice);
   }
 
   const tierTable = SEGMENT_TIERS[segment];
@@ -404,7 +449,7 @@ export function evaluateSegmentedOffer(
   const counterPrice = round2(Math.max(rawCounter, floorPrice));
 
   if (visitorOfferPrice >= counterPrice) {
-    return { outcome: "ACCEPTED", price: round2(visitorOfferPrice) };
+    return acceptedResult(visitorOfferPrice, startingPrice);
   }
 
   const isFinalTier = nextRound >= tierTable.length;

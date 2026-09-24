@@ -12,6 +12,7 @@ import {
   classifySegment,
   evaluateSegmentedOffer,
   getAcceptedMessage,
+  getAcceptedAtListPriceMessage,
   getNoPriceMessage,
 } from "../models/negotiation-tiers.server";
 import {
@@ -128,7 +129,7 @@ async function runOfferAction({ request }: ActionFunctionArgs) {
 
   const startingPrice = Number(negotiationSession.startingPrice);
 
-  async function acceptAt(price: number) {
+  async function acceptAt(price: number, atOrAboveListPrice = false) {
     let draftOrder: { id: string; invoiceUrl: string };
     try {
       // Both cached on the session at /start - no extra API round-trip
@@ -163,7 +164,9 @@ async function runOfferAction({ request }: ActionFunctionArgs) {
 
     return Response.json({
       status: "ACCEPTED",
-      message: getAcceptedMessage(price),
+      message: atOrAboveListPrice
+        ? getAcceptedAtListPriceMessage(price)
+        : getAcceptedMessage(price),
       price,
       checkoutUrl: draftOrder.invoiceUrl,
     });
@@ -241,7 +244,7 @@ async function runOfferAction({ request }: ActionFunctionArgs) {
           messageText: "accepted",
         },
       });
-      return acceptAt(evaluation.price);
+      return acceptAt(evaluation.price, evaluation.atOrAboveListPrice);
     }
 
     if (evaluation.outcome === "ASK_FOR_MORE") {

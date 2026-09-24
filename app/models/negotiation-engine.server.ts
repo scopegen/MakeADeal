@@ -151,12 +151,11 @@ type DraftOrderCreateResponse = {
 // that matters (this was the actual cause of accept intermittently timing
 // out through the app-proxy layer).
 //
-// v1 limitation, stated plainly: negotiation is product-level, not
-// variant-level (matches ProductSettings/NegotiationSession), so the
-// variant baked into the session is always the product's FIRST one, not
-// whichever the visitor actually wants on a multi-variant product. Real
-// gap, not silently "handled" - flagging it here rather than pretending
-// otherwise.
+// Which variant this is depends on what proxy.start.tsx resolved at session
+// creation: whichever variant the widget read as selected on the page, if
+// it was sent and checked out (belongs to this product, in stock) - falling
+// back to the product's first variant only when no variantId was sent, or
+// it didn't check out. See resolveRequestedVariant in proxy.start.tsx.
 export async function createNegotiatedDraftOrder(
   admin: AdminGraphqlClient,
   variantId: string,

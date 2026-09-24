@@ -3,10 +3,13 @@ import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/negotiation-settings.server";
 import { resolveEffectiveLimits } from "../models/negotiation-engine.server";
 
-// Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...
+// Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...&variantId=...
 // Cheap read-only check so the widget only renders its button on products
 // that are actually negotiable, without creating a NegotiationSession just
-// from a page view.
+// from a page view. variantId is optional - whichever variant was selected
+// when the page loaded (see data-variant-id in negotiation-widget.liquid) -
+// and falls back to the product's first variant when absent or when it
+// doesn't belong to this product.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.public.appProxy(request);
   if (!admin || !session) {
@@ -16,12 +19,74 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = await getShopByDomain(session.shop);
   const url = new URL(request.url);
   const productId = url.searchParams.get("productId") ?? "";
+  const variantId = url.searchParams.get("variantId");
   if (!productId) {
     return Response.json({ eligible: false });
   }
 
   const limits = await resolveEffectiveLimits(admin, shop.id, productId);
   if (!limits) {
+    return Response.json({ eligible: false });
+  }
+
+  // Out-of-stock products/variants aren't negotiable - there's nothing to
+  // fulfill. availableForSale already accounts for a merchant's own
+  // "continue selling when out of stock" setting, so this never hides the
+  // button on a product a merchant has deliberately chosen to keep selling.
+  // This is only the page-load check - proxy.start.tsx re-checks the
+  // actual current variant when negotiation actually starts, so a shopper
+  // switching variants after this runs is never left with a stale result.
+  let available: boolean | null = null;
+  if (variantId) {
+    const response = await admin.graphql(
+      `#graphql
+      query NoodleVariantAvailability($id: ID!) {
+        productVariant(id: $id) {
+          availableForSale
+          product {
+            id
+          }
+        }
+      }`,
+      { variables: { id: variantId } },
+    );
+    const json = (await response.json()) as {
+      data?: {
+        productVariant: {
+          availableForSale: boolean;
+          product: { id: string };
+        } | null;
+      };
+    };
+    const variant = json.data?.productVariant;
+    if (variant && variant.product.id === productId) {
+      available = variant.availableForSale;
+    }
+  }
+
+  if (available === null) {
+    const response = await admin.graphql(
+      `#graphql
+      query NoodleProductAvailability($id: ID!) {
+        product(id: $id) {
+          variants(first: 1) {
+            nodes {
+              availableForSale
+            }
+          }
+        }
+      }`,
+      { variables: { id: productId } },
+    );
+    const json = (await response.json()) as {
+      data?: {
+        product: { variants: { nodes: { availableForSale: boolean }[] } } | null;
+      };
+    };
+    available = json.data?.product?.variants.nodes[0]?.availableForSale ?? false;
+  }
+
+  if (!available) {
     return Response.json({ eligible: false });
   }
 

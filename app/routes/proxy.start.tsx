@@ -23,10 +23,94 @@ type ProductPriceResponse = {
   };
 };
 
+type VariantDetailsResponse = {
+  data: {
+    productVariant: {
+      id: string;
+      price: string;
+      availableForSale: boolean;
+      product: {
+        id: string;
+        priceRangeV2: {
+          minVariantPrice: { currencyCode: string };
+        };
+      };
+    } | null;
+  };
+};
+
+// Looks up the specific variant the widget says is selected, and confirms
+// it actually belongs to this product before trusting anything about it -
+// a client-supplied id is never trusted blindly, otherwise a tampered
+// request could negotiate a completely different, unrelated variant's
+// price. Returns null for anything that doesn't check out (wrong product,
+// out of stock, or the id doesn't resolve at all) - the caller falls back
+// to the old first-variant behavior in that case, same as if no variantId
+// had been sent at all.
+type ResolvedVariant =
+  | {
+      ok: true;
+      variantId: string;
+      price: number;
+      currencyCode: string;
+    }
+  // "invalid" (doesn't resolve, or belongs to a different product) falls
+  // back to the old first-variant behavior, same as if no variantId had
+  // been sent at all - could just be a stale id from a cached widget
+  // script. "out_of_stock" is different: the shopper explicitly picked
+  // this one, so silently negotiating a different variant instead would be
+  // actively misleading - the caller rejects the request outright for that
+  // case rather than falling back.
+  | { ok: false; reason: "invalid" | "out_of_stock" };
+
+async function resolveRequestedVariant(
+  admin: { graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response> },
+  variantId: string,
+  productId: string,
+): Promise<ResolvedVariant> {
+  const response = await admin.graphql(
+    `#graphql
+    query NegotiationVariantDetails($id: ID!) {
+      productVariant(id: $id) {
+        id
+        price
+        availableForSale
+        product {
+          id
+          priceRangeV2 {
+            minVariantPrice {
+              currencyCode
+            }
+          }
+        }
+      }
+    }`,
+    { variables: { id: variantId } },
+  );
+  const json = (await response.json()) as VariantDetailsResponse;
+  const variant = json.data.productVariant;
+  if (!variant || variant.product.id !== productId) {
+    return { ok: false, reason: "invalid" };
+  }
+  if (!variant.availableForSale) {
+    return { ok: false, reason: "out_of_stock" };
+  }
+  return {
+    ok: true,
+    variantId: variant.id,
+    price: Number(variant.price),
+    currencyCode: variant.product.priceRangeV2.minVariantPrice.currencyCode,
+  };
+}
+
 // Storefront-facing: POST https://{shop}/apps/negotiate/start
-// Body: productId (required), triggerType (optional). No client-supplied
-// variantId - the session resolves and locks in the product's default
-// variant itself (v1 limitation, see the comment near resolvedVariantId).
+// Body: productId (required), triggerType (optional), variantId (optional -
+// whichever variant the widget read as currently selected on the page; see
+// readSelectedVariantId in widget.tsx). When present and it checks out
+// (belongs to this product, in stock), that variant's own price is used.
+// Otherwise falls back to the product's first variant, same as before this
+// existed - covers older cached widget scripts that don't send one yet, and
+// themes readSelectedVariantId couldn't read a variant from.
 // Signature-verified by authenticate.public.appProxy - a client can't spoof
 // which shop this request is for.
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -99,55 +183,90 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return Response.json({ error: "not_negotiable" }, { status: 404 });
   }
 
-  // Fetches price AND the default variant in one round-trip, and both get
-  // cached on the session below - specifically so the accept path (which
-  // makes an unavoidable draftOrderCreate call already) never needs to
-  // re-fetch this data. Each extra round-trip there is latency stacked on
-  // a request already being proxied through the dev tunnel, and one such
-  // redundant call was the actual cause of accept failing under load - see
-  // the schema comment on NegotiationSession.currencyCode.
-  const priceResponse = await admin.graphql(
-    `#graphql
-    query ProductPriceAndVariant($id: ID!) {
-      product(id: $id) {
-        id
-        title
-        priceRangeV2 {
-          minVariantPrice {
-            amount
-            currencyCode
-          }
-        }
-        variants(first: 1) {
-          nodes {
-            id
-          }
-        }
-      }
-    }`,
-    { variables: { id: productId } },
-  );
-  const priceJson = (await priceResponse.json()) as ProductPriceResponse;
-  const product = priceJson.data.product;
-  if (!product) {
-    return Response.json({ error: "product_not_found" }, { status: 404 });
+  const variantIdRaw = String(formData.get("variantId") ?? "") || null;
+
+  let resolvedVariantId: string | undefined;
+  let startingPrice: number | undefined;
+  let currencyCode: string | undefined;
+
+  if (variantIdRaw) {
+    const requested = await resolveRequestedVariant(admin, variantIdRaw, productId);
+    if (!requested.ok && requested.reason === "out_of_stock") {
+      // The shopper explicitly picked this one - silently negotiating a
+      // different variant instead would be actively misleading, so this
+      // rejects outright rather than falling back.
+      return Response.json(
+        {
+          error: "out_of_stock",
+          message: "Sorry, this option is currently out of stock.",
+        },
+        { status: 404 },
+      );
+    }
+    if (requested.ok) {
+      resolvedVariantId = requested.variantId;
+      startingPrice = requested.price;
+      currencyCode = requested.currencyCode;
+    }
+    // reason === "invalid" (stale id, or belongs to a different product)
+    // falls through to the same fallback lookup as no variantId at all.
   }
 
-  const resolvedVariantId = product.variants.nodes[0]?.id;
-  if (!resolvedVariantId) {
+  if (resolvedVariantId === undefined) {
+    // Fetches price AND the default variant in one round-trip, and both get
+    // cached on the session below - specifically so the accept path (which
+    // makes an unavoidable draftOrderCreate call already) never needs to
+    // re-fetch this data. Each extra round-trip there is latency stacked on
+    // a request already being proxied through the dev tunnel, and one such
+    // redundant call was the actual cause of accept failing under load -
+    // see the schema comment on NegotiationSession.currencyCode.
+    const priceResponse = await admin.graphql(
+      `#graphql
+      query ProductPriceAndVariant($id: ID!) {
+        product(id: $id) {
+          id
+          title
+          priceRangeV2 {
+            minVariantPrice {
+              amount
+              currencyCode
+            }
+          }
+          variants(first: 1) {
+            nodes {
+              id
+            }
+          }
+        }
+      }`,
+      { variables: { id: productId } },
+    );
+    const priceJson = (await priceResponse.json()) as ProductPriceResponse;
+    const product = priceJson.data.product;
+    if (!product) {
+      return Response.json({ error: "product_not_found" }, { status: 404 });
+    }
+
+    resolvedVariantId = product.variants.nodes[0]?.id;
+    if (!resolvedVariantId) {
+      return Response.json({ error: "no_variant" }, { status: 404 });
+    }
+
+    startingPrice = Number(product.priceRangeV2.minVariantPrice.amount);
+    currencyCode = product.priceRangeV2.minVariantPrice.currencyCode;
+  }
+
+  // Unreachable in practice (both branches above always set all three
+  // together) - only here so TypeScript can see that, since it can't
+  // otherwise prove it across two separate conditionally-run blocks.
+  if (startingPrice === undefined || currencyCode === undefined) {
     return Response.json({ error: "no_variant" }, { status: 404 });
   }
-
-  const startingPrice = Number(product.priceRangeV2.minVariantPrice.amount);
-  const currencyCode = product.priceRangeV2.minVariantPrice.currencyCode;
 
   const negotiationSession = await prisma.negotiationSession.create({
     data: {
       shopId: shop.id,
       productId,
-      // v1 limitation (stated elsewhere too): defaults to the product's
-      // first variant rather than whatever the visitor actually wants -
-      // the client-supplied variantId param isn't used for this yet.
       variantId: resolvedVariantId,
       currencyCode,
       customerId,

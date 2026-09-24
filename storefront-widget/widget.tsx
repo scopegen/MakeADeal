@@ -96,6 +96,25 @@ function extractPrice(text: string): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+// Reads whichever variant is CURRENTLY selected on the page, right at the
+// moment it's called - not tracked continuously, since all that matters is
+// the variant actually in play right when a negotiation starts (replaces
+// the v1 "always the product's first variant" limitation noted in
+// negotiation-engine.server.ts). Relies on Shopify's own documented
+// product-form convention, a form field named "id" holding the variant
+// (confirmed via shopify.dev's theme docs) - covers Dawn and the large
+// majority of Online Store 2.0 themes. Falls back to whichever variant was
+// selected at page load (read from Liquid) if that field can't be found,
+// e.g. on a theme that doesn't follow the convention - same behavior as
+// before this existed, not a regression for that case.
+function readSelectedVariantId(fallback: string | null): string | null {
+  const field = document.querySelector<HTMLInputElement | HTMLSelectElement>(
+    'form[action*="/cart/add"] [name="id"]',
+  );
+  const rawId = field?.value;
+  return rawId ? `gid://shopify/ProductVariant/${rawId}` : fallback;
+}
+
 // Darkens a hex color by a fixed percentage per channel, for the hover
 // shade of a merchant-chosen accent color - same relationship the fixed
 // midnight-blue default already had (#191970 -> #12124f, roughly a 22%
@@ -200,7 +219,13 @@ function TagIcon() {
   );
 }
 
-function ChatWidget({ productId }: { productId: string }) {
+function ChatWidget({
+  productId,
+  initialVariantId,
+}: {
+  productId: string;
+  initialVariantId: string | null;
+}) {
   const [eligible, setEligible] = useState(false);
   const [config, setConfig] = useState<WidgetConfig | null>(null);
   const [open, setOpen] = useState(false);
@@ -220,12 +245,13 @@ function ChatWidget({ productId }: { productId: string }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch(
-      "/apps/negotiate/eligibility?productId=" + encodeURIComponent(productId),
-    )
+    const params = new URLSearchParams({ productId });
+    if (initialVariantId) params.set("variantId", initialVariantId);
+    fetch("/apps/negotiate/eligibility?" + params.toString())
       .then((res) => res.json())
       .then((data) => {
         setEligible(Boolean(data && data.eligible));
@@ -235,7 +261,7 @@ function ChatWidget({ productId }: { productId: string }) {
         }
       })
       .catch(() => setEligible(false));
-  }, [productId]);
+  }, [productId, initialVariantId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -243,6 +269,18 @@ function ChatWidget({ productId }: { productId: string }) {
       behavior: "smooth",
     });
   }, [messages]);
+
+  // Disabling the input while a message is in flight (below) kicks keyboard
+  // focus out of it - that's just how disabled form elements work in every
+  // browser - and re-enabling it afterward doesn't bring focus back on its
+  // own. Without this, every single message sent means clicking the input
+  // again before the next one can be typed. Runs whenever sending flips back
+  // to false; harmless no-op via the ref when the input isn't even rendered
+  // yet (before the panel's first response arrives) or not rendered at all
+  // (status isn't "active").
+  useEffect(() => {
+    if (!sending) inputRef.current?.focus();
+  }, [sending]);
 
   const headerTitle = config?.headerTitle || "Negotiate";
 
@@ -270,6 +308,8 @@ function ChatWidget({ productId }: { productId: string }) {
       fd.set("productId", productId);
       fd.set("triggerType", "ALWAYS_ON");
       fd.set("anonymousId", getAnonymousId());
+      const variantId = readSelectedVariantId(initialVariantId);
+      if (variantId) fd.set("variantId", variantId);
       const res = await fetch("/apps/negotiate/start", {
         method: "POST",
         body: fd,
@@ -538,6 +578,7 @@ function ChatWidget({ productId }: { productId: string }) {
         <div className="sgn-footer">
           <div className="sgn-input-row">
             <input
+              ref={inputRef}
               type="text"
               placeholder="Type your offer…"
               value={input}
@@ -735,7 +776,12 @@ function bootstrap() {
 
   injectStylesheet();
   const root = createRoot(mount);
-  root.render(<ChatWidget productId={productId} />);
+  root.render(
+    <ChatWidget
+      productId={productId}
+      initialVariantId={mount.dataset.variantId ?? null}
+    />,
+  );
 }
 
 bootstrap();
