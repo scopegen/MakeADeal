@@ -39,20 +39,20 @@ type Tier = {
 // a line break - see getGreetingMessage below.
 const GREETING_COPIES: [string, string][] = [
   [
-    "Hi! I'm sure you have a price in mind.",
-    "Share it with me, and let's see if we can find something that works for both of us.",
+    "Hello! I'm your sales buddy. I'll do my best to get you a great deal.",
+    "What price did you have in mind?",
   ],
   [
-    "Hello! If you have a price you'd feel comfortable paying, I'd be happy to hear it.",
-    "Let's see if we can meet somewhere that works for you.",
+    "Hello! I'm your sales buddy. Let's see if we can make this work at a price you're comfortable with.",
+    "What's your offer?",
   ],
   [
-    "Hi there! I'd love to hear what price you had in mind.",
-    "Send me your offer, and I'll see what I can do from my side.",
+    "Hello! I'm your sales buddy. I'm here to help you find a deal that feels right.",
+    "What price would you like to offer?",
   ],
   [
-    "Hello! Everyone has a number they feel comfortable with.",
-    "Share yours, and let's see how close we can get.",
+    "Hello! I'm your sales buddy. Let's find a deal that works for both of us.",
+    "What would you like to offer?",
   ],
 ];
 

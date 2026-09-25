@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/negotiation-settings.server";
 import { resolveEffectiveLimits } from "../models/negotiation-engine.server";
+import { getGreetingMessage } from "../models/negotiation-tiers.server";
 
 // Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...&variantId=...
 // Cheap read-only check so the widget only renders its button on products
@@ -100,6 +101,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       headerTitle: limits.rule.headerTitle ?? null,
       launcherButtonText: limits.rule.launcherButtonText ?? null,
       primaryColor: limits.rule.primaryColor ?? null,
+      // null when auto-open is off (the default). delaySeconds is 0-60,
+      // validated when the rule is saved.
+      autoOpen: limits.rule.autoOpenEnabled
+        ? { delaySeconds: limits.rule.autoOpenDelaySeconds }
+        : null,
     },
+    // Opening the panel no longer creates a negotiation (that only happens
+    // when the shopper sends their first message - see proxy.start.tsx), so
+    // the greeting has to be available before any session exists. Picked
+    // once per page load; the widget shows it as two chat bubbles.
+    greeting: getGreetingMessage(),
   });
 };

@@ -19,6 +19,8 @@ type ProductRef = { id: string; title: string };
 // React usage - this minimal structural type stands in for that (confirmed
 // shape via Shopify's own docs examples: `.value` for text/select fields).
 type FieldChangeEvent = { currentTarget: { value: string } };
+// Same idea for switches, which report `.checked` instead of `.value`.
+type SwitchChangeEvent = { currentTarget: { checked: boolean } };
 
 // ---------------------------------------------------------------------------
 // loader
@@ -185,6 +187,20 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
   const primaryColor = primaryColorRaw || null;
 
+  const autoOpenEnabled = String(formData.get("autoOpenEnabled") ?? "") === "true";
+  const autoOpenDelayRaw = String(formData.get("autoOpenDelaySeconds") ?? "").trim();
+  const autoOpenDelaySeconds = autoOpenDelayRaw === "" ? 0 : Number(autoOpenDelayRaw);
+  if (
+    !Number.isInteger(autoOpenDelaySeconds) ||
+    autoOpenDelaySeconds < 0 ||
+    autoOpenDelaySeconds > 60
+  ) {
+    return {
+      error:
+        "Auto-open delay must be a whole number of seconds between 0 and 60.",
+    };
+  }
+
   const data = {
     name,
     scopeType: scopeType as "ALL_PRODUCTS" | "COLLECTION" | "PRODUCT_GROUP",
@@ -202,6 +218,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     headerTitle,
     launcherButtonText,
     primaryColor,
+    autoOpenEnabled,
+    autoOpenDelaySeconds,
     // Explicitly cleared, not just omitted - these fields no longer have
     // any UI to set them, but Prisma's update() leaves anything left out of
     // `data` untouched. Without this, editing an old rule that still has
@@ -297,6 +315,14 @@ export default function RuleEditor() {
   const [primaryColor, setPrimaryColor] = useState(
     rule?.primaryColor ?? "#191970",
   );
+  const [autoOpenEnabled, setAutoOpenEnabled] = useState(
+    rule?.autoOpenEnabled ?? false,
+  );
+  // Kept as a string while editing, same as the other fields here - the
+  // server validates it as a whole number of seconds (0-60).
+  const [autoOpenDelaySeconds, setAutoOpenDelaySeconds] = useState(
+    String(rule?.autoOpenDelaySeconds ?? 0),
+  );
 
   async function pickCollection() {
     const result = await shopify.resourcePicker({ type: "collection" });
@@ -351,6 +377,8 @@ export default function RuleEditor() {
     formData.set("headerTitle", headerTitle);
     formData.set("launcherButtonText", launcherButtonText);
     formData.set("primaryColor", primaryColor);
+    formData.set("autoOpenEnabled", String(autoOpenEnabled));
+    formData.set("autoOpenDelaySeconds", autoOpenDelaySeconds);
     submit(formData, { method: "post" });
   }
 
@@ -544,6 +572,31 @@ export default function RuleEditor() {
             value={primaryColor}
             details="Used for the header, chat bubbles, and buttons throughout the widget."
             onChange={(e: FieldChangeEvent) => setPrimaryColor(e.currentTarget.value)}
+          />
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Auto-open">
+        <s-stack direction="block" gap="base">
+          <s-switch
+            label="Open the chat automatically"
+            details="When on, the chat opens by itself when a shopper lands on the product page, once per visit. Opening it never counts as a negotiation, that only happens when the shopper sends a message."
+            checked={autoOpenEnabled || undefined}
+            onChange={(e: SwitchChangeEvent) =>
+              setAutoOpenEnabled(e.currentTarget.checked)
+            }
+          />
+          <s-number-field
+            label="Open after (seconds)"
+            value={autoOpenDelaySeconds}
+            min={0}
+            max={60}
+            step={1}
+            details="Type 0 to open immediately, or any whole number up to 60."
+            disabled={!autoOpenEnabled || undefined}
+            onChange={(e: FieldChangeEvent) =>
+              setAutoOpenDelaySeconds(e.currentTarget.value)
+            }
           />
         </s-stack>
       </s-section>

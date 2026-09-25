@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 
@@ -57,7 +57,30 @@ type WidgetConfig = {
   headerTitle: string | null;
   launcherButtonText: string | null;
   primaryColor: string | null;
+  // null/absent = the merchant hasn't turned auto-open on.
+  autoOpen?: { delaySeconds: number } | null;
 };
+
+// What /offer (and the `offer` embedded in /start's response for a shopper's
+// first message) sends back.
+type OfferResponse = {
+  status?: string;
+  error?: string;
+  message?: string;
+  price?: number;
+  checkoutUrl?: string;
+  finalTier?: boolean;
+  floorReached?: boolean;
+};
+
+// Normally the greeting comes from /eligibility (see proxy.eligibility.tsx),
+// so opening the panel doesn't need a server round trip or create anything.
+// This is only used if that response has none, e.g. a widget already
+// deployed against a backend that doesn't send one yet.
+const FALLBACK_GREETING: [string, string] = [
+  "Hello! I'm your sales buddy. I'll do my best to get you a great deal.",
+  "What price did you have in mind?",
+];
 
 const LAUNCHER_TEXT = "Make an offer";
 const SEND_BUTTON_TEXT = "Send";
@@ -247,6 +270,11 @@ function ChatWidget({
   const sessionIdRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const greetingRef = useRef<[string, string]>(FALLBACK_GREETING);
+  const greetingShownRef = useRef(false);
+  // Set once the shopper has opened or closed the panel themselves, so a
+  // pending auto-open timer never reopens something they just closed.
+  const manualRef = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams({ productId });
@@ -259,9 +287,64 @@ function ChatWidget({
           setConfig(data.config);
           setAccentColor(data.config.primaryColor);
         }
+        if (
+          data &&
+          Array.isArray(data.greeting) &&
+          data.greeting.length === 2 &&
+          data.greeting.every((line: unknown) => typeof line === "string")
+        ) {
+          greetingRef.current = [data.greeting[0], data.greeting[1]];
+        }
       })
       .catch(() => setEligible(false));
   }, [productId, initialVariantId]);
+
+  // Opening the panel (by click or automatically) only shows it and the
+  // greeting - it deliberately creates nothing on the server. A negotiation
+  // is only created when the shopper sends their first message (see
+  // startSessionWithMessage). Uses only refs and state setters so it stays
+  // stable across renders.
+  const openPanel = useCallback(() => {
+    setOpen(true);
+    if (greetingShownRef.current) return;
+    greetingShownRef.current = true;
+    const lines = greetingRef.current;
+    setMessages((prev) => [
+      ...prev,
+      ...lines.map(
+        (text): Message => ({
+          id: Math.random().toString(36).slice(2),
+          role: "bot",
+          text,
+          time: formatTime(new Date()),
+        }),
+      ),
+    ]);
+  }, []);
+
+  const autoOpen = config?.autoOpen ?? null;
+  useEffect(() => {
+    if (!eligible || !autoOpen) return;
+    // Once per product per browser session: closing it, or refreshing the
+    // page, doesn't bring it back. If storage is blocked we still auto-open,
+    // we just can't remember that we did.
+    const storageKey = `sgnAutoOpened:${productId}`;
+    try {
+      if (sessionStorage.getItem(storageKey)) return;
+    } catch {
+      // ignore
+    }
+    const timer = setTimeout(() => {
+      if (manualRef.current) return;
+      try {
+        sessionStorage.setItem(storageKey, "1");
+      } catch {
+        // ignore
+      }
+      openPanel();
+    }, autoOpen.delaySeconds * 1000);
+    return () => clearTimeout(timer);
+  }, [eligible, autoOpen, productId, openPanel]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -301,7 +384,12 @@ function ChatWidget({
     ]);
   }
 
-  async function startSession() {
+  // The shopper's first message: creates the negotiation and handles that
+  // message in ONE request (see proxy.start.tsx), so the first reply isn't
+  // slower than later ones. The variant is read right now, at the moment
+  // they actually send something - not when the panel opened - so switching
+  // size/colour before typing is picked up.
+  async function startSessionWithMessage(price: number | null) {
     setSending(true);
     try {
       const fd = new FormData();
@@ -310,6 +398,8 @@ function ChatWidget({
       fd.set("anonymousId", getAnonymousId());
       const variantId = readSelectedVariantId(initialVariantId);
       if (variantId) fd.set("variantId", variantId);
+      fd.set("firstAction", "counter");
+      if (price != null) fd.set("offerPrice", String(price));
       const res = await fetch("/apps/negotiate/start", {
         method: "POST",
         body: fd,
@@ -321,27 +411,71 @@ function ChatWidget({
         if (typeof data.startingPrice === "number") {
           setStartingPrice(data.startingPrice);
         }
-        // Greeting is always two separate messages (see proxy.start's
-        // `messages` array) - rendered as two consecutive bot bubbles,
-        // not one message with a line break.
-        if (Array.isArray(data.messages)) {
-          for (const line of data.messages) addMessage("bot", line);
-        } else if (data.message) {
-          addMessage("bot", data.message);
+        if (data.offer) {
+          applyOfferResponse(data.offer);
+        } else {
+          // A backend that doesn't take a first message on /start yet:
+          // the session exists now, so send the message the usual way.
+          await sendAction("counter", price ?? undefined);
         }
+      } else if (data && data.error === "rate_limited") {
+        setStatus("rate_limited");
+        addMessage("system", data.message);
       } else {
-        setStatus("error");
+        // Status stays "idle" on purpose so the input stays usable - e.g.
+        // the variant they picked is out of stock, and choosing another
+        // one and sending again is a perfectly good retry.
         addMessage(
           "system",
           (data && data.message) || "Couldn't start a negotiation right now.",
         );
       }
     } catch {
-      setStatus("error");
       addMessage("system", "Something went wrong — please try again.");
     } finally {
       setSending(false);
     }
+  }
+
+  // Shared by every reply to a shopper message: /offer's response, and the
+  // `offer` embedded in /start's response for their first message.
+  function applyOfferResponse(data: OfferResponse) {
+    if (data.status === "ACCEPTED") {
+      setStatus("accepted");
+      setCheckoutUrl(data.checkoutUrl ?? null);
+      if (typeof data.price === "number") setAcceptedPrice(data.price);
+      addMessage("bot", data.message ?? "");
+      return;
+    }
+    if (data.status === "DECLINED") {
+      setStatus("declined");
+      addMessage("bot", data.message ?? "");
+      return;
+    }
+    if (data.status === "EXPIRED") {
+      setStatus("expired");
+      addMessage("system", data.message ?? "");
+      return;
+    }
+    if (data.error === "rate_limited") {
+      setStatus("rate_limited");
+      addMessage("system", data.message ?? "");
+      return;
+    }
+    if (data.error) {
+      // eslint-disable-next-line no-console
+      console.error("[Scopegen Negotiator] offer failed:", data);
+      addMessage("system", "Something went wrong — please try again.");
+      return;
+    }
+    // finalTier: this round's counter IS the segment's final tier.
+    // floorReached: the segment was already at its final tier and the
+    // visitor countered again - both mean "show Deal/No deal now".
+    const isFinalOffer = Boolean(data.finalTier) || Boolean(data.floorReached);
+    // A "no price found" nudge or the ASK_FOR_MORE tier both come back
+    // with no price at all - nothing to accept yet in either case.
+    setHasOffer(data.price != null);
+    addMessage("bot", data.message ?? "", isFinalOffer);
   }
 
   async function sendAction(
@@ -360,44 +494,7 @@ function ChatWidget({
         body: fd,
       });
       const data = await res.json();
-
-      if (data.status === "ACCEPTED") {
-        setStatus("accepted");
-        setCheckoutUrl(data.checkoutUrl);
-        if (typeof data.price === "number") setAcceptedPrice(data.price);
-        addMessage("bot", data.message);
-        return;
-      }
-      if (data.status === "DECLINED") {
-        setStatus("declined");
-        addMessage("bot", data.message);
-        return;
-      }
-      if (data.status === "EXPIRED") {
-        setStatus("expired");
-        addMessage("system", data.message);
-        return;
-      }
-      if (data.error === "rate_limited") {
-        setStatus("rate_limited");
-        addMessage("system", data.message);
-        return;
-      }
-      if (data.error) {
-        // eslint-disable-next-line no-console
-        console.error("[Scopegen Negotiator] offer failed:", data);
-        addMessage("system", "Something went wrong — please try again.");
-        return;
-      }
-      // finalTier: this round's counter IS the segment's final tier.
-      // floorReached: the segment was already at its final tier and the
-      // visitor countered again - both mean "show Deal/No deal now".
-      const isFinalOffer =
-        Boolean(data.finalTier) || Boolean(data.floorReached);
-      // A "no price found" nudge or the ASK_FOR_MORE tier both come back
-      // with no price at all - nothing to accept yet in either case.
-      setHasOffer(data.price != null);
-      addMessage("bot", data.message, isFinalOffer);
+      applyOfferResponse(data);
     } catch {
       addMessage("system", "Something went wrong — please try again.");
     } finally {
@@ -406,8 +503,18 @@ function ChatWidget({
   }
 
   function handleOpen() {
-    setOpen(true);
-    if (!sessionIdRef.current) startSession();
+    manualRef.current = true;
+    openPanel();
+    // Focus used to land in the input on its own once the greeting finished
+    // loading from the server. Nothing loads on open now, so do it directly -
+    // for a click only: doing it on an automatic open would grab focus from
+    // the page (and pop the keyboard up on phones).
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function handleClose() {
+    manualRef.current = true;
+    setOpen(false);
   }
 
   function handleSend() {
@@ -423,12 +530,17 @@ function ChatWidget({
     const price = extractPrice(trimmed);
     addMessage("customer", trimmed);
     setInput("");
-    sendAction("counter", price ?? undefined);
+    // No session yet means this is their first message - see
+    // startSessionWithMessage.
+    if (sessionIdRef.current) sendAction("counter", price ?? undefined);
+    else startSessionWithMessage(price);
   }
 
   if (!eligible) return null;
 
-  const showInput = status === "active";
+  // "idle" is the state before the shopper's first message: the panel is
+  // open and showing the greeting, but no negotiation exists yet.
+  const showInput = status === "idle" || status === "active";
   // Deal/No deal only ever show attached to the bot's final-tier offer, not
   // any earlier counter - and only for as long as that's still the latest
   // message (a customer typing a new counter after it moves the
@@ -454,9 +566,8 @@ function ChatWidget({
   // hiding it on open would leave a jarring empty gap where a button used
   // to be. The panel opens as an overlay ON TOP of it below, not instead
   // of it. handleOpen is safe to call again while already open (setOpen
-  // is a no-op if already true, startSession only fires if a session
-  // doesn't already exist), so leaving this clickable the whole time is
-  // harmless.
+  // is a no-op if already true, and the greeting is only ever added once),
+  // so leaving this clickable the whole time is harmless.
   const launcher = (
     <button type="button" onClick={handleOpen} className="sgn-launcher">
       <ChatIcon />
@@ -488,7 +599,7 @@ function ChatWidget({
         <div className="sgn-header-title">{headerTitle}</div>
         <button
           type="button"
-          onClick={() => setOpen(false)}
+          onClick={handleClose}
           className="sgn-close-btn"
           aria-label="Close"
         >

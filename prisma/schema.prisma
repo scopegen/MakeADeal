@@ -175,6 +175,13 @@ model NegotiationRule {
   acceptButtonText   String?
   declineButtonText  String?
 
+  // Whether the chat panel opens by itself when a shopper lands on the
+  // product page, and after how many seconds (0 = immediately). Off by
+  // default. Opening the panel never creates a negotiation on its own - that
+  // only happens when the shopper sends their first message.
+  autoOpenEnabled      Boolean @default(false)
+  autoOpenDelaySeconds Int     @default(0)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

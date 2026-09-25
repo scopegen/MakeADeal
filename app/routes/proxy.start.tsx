@@ -9,6 +9,7 @@ import {
 } from "../models/negotiation-engine.server";
 import { getRateLimitedMessage } from "../models/negotiation-copy.server";
 import { getGreetingMessage } from "../models/negotiation-tiers.server";
+import { processNegotiationAction } from "../models/negotiation-offer.server";
 
 type ProductPriceResponse = {
   data: {
@@ -111,6 +112,10 @@ async function resolveRequestedVariant(
 // Otherwise falls back to the product's first variant, same as before this
 // existed - covers older cached widget scripts that don't send one yet, and
 // themes readSelectedVariantId couldn't read a variant from.
+// firstAction (optional, "counter") + offerPrice (optional): the shopper's
+// first message, sent together with the create request so the negotiation is
+// only ever created once they actually say something (opening the panel
+// creates nothing). Without firstAction this behaves exactly as before.
 // Signature-verified by authenticate.public.appProxy - a client can't spoof
 // which shop this request is for.
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -184,6 +189,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const variantIdRaw = String(formData.get("variantId") ?? "") || null;
+  const firstAction = String(formData.get("firstAction") ?? "");
 
   let resolvedVariantId: string | undefined;
   let startingPrice: number | undefined;
@@ -284,11 +290,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     },
   });
 
+  // The shopper's first message, handled in this same request instead of a
+  // second /offer round trip right after (each proxied request adds real
+  // latency). Same code path /offer uses for every later message. The result
+  // is embedded as `offer` - and even if it's an error (e.g. the draft order
+  // couldn't be created), the session itself already exists and is returned,
+  // so the widget can carry on from here.
+  if (firstAction === "counter") {
+    const offerResponse = await processNegotiationAction({
+      admin,
+      negotiationSession,
+      limits,
+      action: "counter",
+      offerPriceRaw: formData.get("offerPrice"),
+    });
+    return Response.json({
+      sessionId: negotiationSession.id,
+      startingPrice,
+      currencyCode,
+      offer: await offerResponse.json(),
+    });
+  }
+
   return Response.json({
     sessionId: negotiationSession.id,
     // Two separate messages, sent as two consecutive bot chat bubbles by
     // the widget - not one message with a line break. See
-    // getGreetingMessage's doc comment.
+    // getGreetingMessage's doc comment. Only used by older cached widget
+    // scripts, which still create the session the moment the panel opens -
+    // the current widget shows the greeting from /eligibility instead.
     messages: getGreetingMessage(),
     startingPrice,
     currencyCode,
