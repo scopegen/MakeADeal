@@ -77,7 +77,7 @@ type OfferResponse = {
 // so opening the panel doesn't need a server round trip or create anything.
 // This is only used if that response has none, e.g. a widget already
 // deployed against a backend that doesn't send one yet.
-const FALLBACK_GREETING: [string, string] = [
+const FALLBACK_GREETING: string[] = [
   "Hello! I'm your sales buddy. I'll do my best to get you a great deal.",
   "What price did you have in mind?",
 ];
@@ -270,7 +270,7 @@ function ChatWidget({
   const sessionIdRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const greetingRef = useRef<[string, string]>(FALLBACK_GREETING);
+  const greetingRef = useRef<string[]>(FALLBACK_GREETING);
   const greetingShownRef = useRef(false);
   // Set once the shopper has opened or closed the panel themselves, so a
   // pending auto-open timer never reopens something they just closed.
@@ -287,13 +287,18 @@ function ChatWidget({
           setConfig(data.config);
           setAccentColor(data.config.primaryColor);
         }
+        // One or two bubbles: our built-in greetings are two, a merchant's
+        // own first message may be just the initial message on its own.
         if (
           data &&
           Array.isArray(data.greeting) &&
-          data.greeting.length === 2 &&
-          data.greeting.every((line: unknown) => typeof line === "string")
+          data.greeting.length >= 1 &&
+          data.greeting.length <= 2 &&
+          data.greeting.every(
+            (line: unknown) => typeof line === "string" && line.length > 0,
+          )
         ) {
-          greetingRef.current = [data.greeting[0], data.greeting[1]];
+          greetingRef.current = data.greeting;
         }
       })
       .catch(() => setEligible(false));

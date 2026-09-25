@@ -182,6 +182,12 @@ model NegotiationRule {
   autoOpenEnabled      Boolean @default(false)
   autoOpenDelaySeconds Int     @default(0)
 
+  // Optional custom first chat message, shown as up to two bubbles (the
+  // sub message is optional). Both blank = the built-in greetings are used.
+  // A sub message without an initial message is rejected when saving.
+  initialMessage String?
+  subMessage     String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

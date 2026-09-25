@@ -201,6 +201,22 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     };
   }
 
+  const initialMessage =
+    String(formData.get("initialMessage") ?? "").trim() || null;
+  const subMessage = String(formData.get("subMessage") ?? "").trim() || null;
+  if (
+    (initialMessage && initialMessage.length > 300) ||
+    (subMessage && subMessage.length > 300)
+  ) {
+    return { error: "Each first message can be at most 300 characters." };
+  }
+  if (subMessage && !initialMessage) {
+    return {
+      error:
+        "Add an initial message first, or clear the sub message. A sub message can't be shown on its own.",
+    };
+  }
+
   const data = {
     name,
     scopeType: scopeType as "ALL_PRODUCTS" | "COLLECTION" | "PRODUCT_GROUP",
@@ -220,6 +236,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     primaryColor,
     autoOpenEnabled,
     autoOpenDelaySeconds,
+    initialMessage,
+    subMessage,
     // Explicitly cleared, not just omitted - these fields no longer have
     // any UI to set them, but Prisma's update() leaves anything left out of
     // `data` untouched. Without this, editing an old rule that still has
@@ -315,6 +333,10 @@ export default function RuleEditor() {
   const [primaryColor, setPrimaryColor] = useState(
     rule?.primaryColor ?? "#191970",
   );
+  const [initialMessage, setInitialMessage] = useState(
+    rule?.initialMessage ?? "",
+  );
+  const [subMessage, setSubMessage] = useState(rule?.subMessage ?? "");
   const [autoOpenEnabled, setAutoOpenEnabled] = useState(
     rule?.autoOpenEnabled ?? false,
   );
@@ -377,6 +399,8 @@ export default function RuleEditor() {
     formData.set("headerTitle", headerTitle);
     formData.set("launcherButtonText", launcherButtonText);
     formData.set("primaryColor", primaryColor);
+    formData.set("initialMessage", initialMessage);
+    formData.set("subMessage", subMessage);
     formData.set("autoOpenEnabled", String(autoOpenEnabled));
     formData.set("autoOpenDelaySeconds", autoOpenDelaySeconds);
     submit(formData, { method: "post" });
@@ -565,6 +589,28 @@ export default function RuleEditor() {
             details="Shown on the floating button before a customer opens the chat. Defaults to &quot;Make an offer&quot; if left blank."
             onChange={(e: FieldChangeEvent) =>
               setLauncherButtonText(e.currentTarget.value)
+            }
+          />
+          <s-text-area
+            label="Initial message 1 (optional)"
+            value={initialMessage}
+            rows={2}
+            maxLength={300}
+            placeholder="e.g. Hello! I'm your sales buddy. I'll do my best to get you a great deal."
+            details="The first thing the bot says when a shopper opens the chat. Leave both message boxes empty to use our default greetings."
+            onChange={(e: FieldChangeEvent) =>
+              setInitialMessage(e.currentTarget.value)
+            }
+          />
+          <s-text-area
+            label="Sub message (optional)"
+            value={subMessage}
+            rows={2}
+            maxLength={300}
+            placeholder="e.g. What price did you have in mind?"
+            details="Shown as a second chat bubble right after the initial message. Needs an initial message."
+            onChange={(e: FieldChangeEvent) =>
+              setSubMessage(e.currentTarget.value)
             }
           />
           <s-color-field

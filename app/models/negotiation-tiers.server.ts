@@ -331,6 +331,19 @@ export function getGreetingMessage(): [string, string] {
   return pick(GREETING_COPIES);
 }
 
+// The merchant's own first message if they've set an initial message on the
+// rule, otherwise one of the built-in greetings above. Each entry is one chat
+// bubble. The sub message is optional, and only ever shown after an initial
+// message (the Rules page rejects a sub message without one).
+export function getGreetingLines(
+  rule: { initialMessage: string | null; subMessage: string | null } | null,
+): string[] {
+  const initial = rule?.initialMessage?.trim();
+  if (!initial) return getGreetingMessage();
+  const sub = rule?.subMessage?.trim();
+  return sub ? [initial, sub] : [initial];
+}
+
 export function getNoPriceMessage() {
   return pick(NO_PRICE_COPIES);
 }
