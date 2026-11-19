@@ -31,6 +31,42 @@ import { createPortal } from "react-dom";
 // cost/latency tradeoff, not an accuracy ceiling we're pretending doesn't
 // exist - ambiguous phrasing ("around 400-450") won't parse.
 
+type SuggestedProduct = {
+  id: string;
+  title: string;
+  price: number;
+  currencyCode: string;
+  imageUrl: string | null;
+  handle: string;
+};
+
+// The card price the way shoppers are used to seeing money on this store
+// ("$6,500.00", "₹6,500.00") rather than a bare "6500.00": the currency
+// Shopify reported for the price, in the page's own language. Falls back to
+// the plain number if the browser doesn't know the currency or language.
+function formatMoney(amount: number, currencyCode: string) {
+  try {
+    return new Intl.NumberFormat(document.documentElement.lang || undefined, {
+      style: "currency",
+      currency: currencyCode,
+    }).format(amount);
+  } catch {
+    return amount.toFixed(2);
+  }
+}
+
+// Built from the handle under the storefront's own locale root (e.g. "/" or
+// "/en-us/" with Shopify Markets), via Shopify's documented
+// window.Shopify.routes.root - so the link keeps the shopper on the same
+// domain and language they're browsing in. Falls back to "/" if a theme
+// doesn't expose it.
+function productUrl(handle: string) {
+  const root =
+    (window as unknown as { Shopify?: { routes?: { root?: string } } }).Shopify
+      ?.routes?.root || "/";
+  return `${root}products/${encodeURIComponent(handle)}`;
+}
+
 type Message = {
   id: string;
   role: "bot" | "customer" | "system";
@@ -40,6 +76,10 @@ type Message = {
   // the segment's final tier, or a repeat hold at the floor) - Deal/No deal
   // render inline below this specific message, not any earlier counter.
   isFinalOffer?: boolean;
+  // Set only on the one message that introduces product suggestions (see
+  // applyOfferResponse) - a carousel renders below this specific bubble,
+  // never more than once per session.
+  suggestedProducts?: SuggestedProduct[];
 };
 
 type SessionStatus =
@@ -71,6 +111,13 @@ type OfferResponse = {
   checkoutUrl?: string;
   finalTier?: boolean;
   floorReached?: boolean;
+  // null when suggestions are off, not applicable, or already shown once
+  // this session - see negotiation-offer.server.ts's suggestionsShown. Comes
+  // with a held floor (an extra bubble after the main message) or with
+  // DECLINED (replaces the goodbye). products is [] for the floor-held
+  // "nothing to suggest" case, which still carries its own message (shown
+  // as plain text, no carousel).
+  suggestions?: { message: string; products: SuggestedProduct[] } | null;
 };
 
 // Normally the greeting comes from /eligibility (see proxy.eligibility.tsx),
@@ -376,6 +423,7 @@ function ChatWidget({
     role: Message["role"],
     text: string,
     isFinalOffer?: boolean,
+    suggestedProducts?: SuggestedProduct[],
   ) {
     setMessages((prev) => [
       ...prev,
@@ -385,6 +433,7 @@ function ChatWidget({
         text,
         time: formatTime(new Date()),
         isFinalOffer,
+        suggestedProducts,
       },
     ]);
   }
@@ -454,7 +503,14 @@ function ChatWidget({
     }
     if (data.status === "DECLINED") {
       setStatus("declined");
-      addMessage("bot", data.message ?? "");
+      // "No deal" with products to suggest: the suggestions bubble and its
+      // cards replace the plain goodbye, so the chat ends on something the
+      // shopper can act on. No products (or suggestions off): the goodbye.
+      if (data.suggestions && data.suggestions.products.length > 0) {
+        addMessage("bot", data.suggestions.message, false, data.suggestions.products);
+      } else {
+        addMessage("bot", data.message ?? "");
+      }
       return;
     }
     if (data.status === "EXPIRED") {
@@ -481,6 +537,23 @@ function ChatWidget({
     // with no price at all - nothing to accept yet in either case.
     setHasOffer(data.price != null);
     addMessage("bot", data.message ?? "", isFinalOffer);
+
+    // A separate bubble, right after the main one - at most once per
+    // session (the backend enforces that; this just renders whatever it
+    // sent). Empty products with a message is the "nothing else available"
+    // case, shown as plain text, no carousel. It inherits isFinalOffer from
+    // the offer it follows: Deal/No deal only ever render under the LAST
+    // message, so without this, a suggestions bubble arriving after a held
+    // floor would hide them - leaving no way to decline, and no way to
+    // reach the decline-time suggestions either.
+    if (data.suggestions) {
+      addMessage(
+        "bot",
+        data.suggestions.message,
+        isFinalOffer,
+        data.suggestions.products,
+      );
+    }
   }
 
   async function sendAction(
@@ -633,6 +706,33 @@ function ChatWidget({
               >
                 {m.text}
               </div>
+              {m.suggestedProducts && m.suggestedProducts.length > 0 && (
+                <div className="sgn-suggestions-row">
+                  {m.suggestedProducts.map((p) => (
+                    <a
+                      key={p.id}
+                      href={productUrl(p.handle)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="sgn-suggestion-card"
+                    >
+                      {p.imageUrl ? (
+                        <img
+                          src={p.imageUrl}
+                          alt={p.title}
+                          className="sgn-suggestion-image"
+                        />
+                      ) : (
+                        <div className="sgn-suggestion-image sgn-suggestion-image-empty" />
+                      )}
+                      <div className="sgn-suggestion-title">{p.title}</div>
+                      <div className="sgn-suggestion-price">
+                        {formatMoney(p.price, p.currencyCode)}
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
               {/* Attached to whichever message is CURRENTLY the latest final
                 offer - i === messages.length - 1 keeps this from also
                 showing under an earlier final offer once the conversation
@@ -826,6 +926,26 @@ const STYLESHEET = `
 }
 .sgn-typing span:nth-child(2) { animation-delay: 0.15s; }
 .sgn-typing span:nth-child(3) { animation-delay: 0.3s; }
+.sgn-suggestions-row {
+  display: flex; gap: 10px; overflow-x: auto; max-width: 100%; padding: 2px 2px 6px;
+  scrollbar-width: thin;
+}
+.sgn-suggestion-card {
+  flex: 0 0 auto; width: 110px; display: flex; flex-direction: column; gap: 4px;
+  text-decoration: none; color: inherit; background: #fff; border: 1px solid #ececec;
+  border-radius: 12px; padding: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.sgn-suggestion-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
+.sgn-suggestion-image {
+  width: 100%; height: 90px; object-fit: cover; border-radius: 8px; background: #f0f1f3;
+}
+.sgn-suggestion-image-empty { display: block; }
+.sgn-suggestion-title {
+  font-size: 11.5px; font-weight: 600; line-height: 1.3; color: #111;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sgn-suggestion-price { font-size: 12px; font-weight: 700; color: var(--sgn-accent); }
 @keyframes sgn-typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-4px); opacity: 1; }

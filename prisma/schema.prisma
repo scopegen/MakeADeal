@@ -29,6 +29,18 @@ model Shop {
   // API call on every request. Kept null/unset until pricing is actually
   // wired up post-submission - nothing reads this yet.
   planHandle    String?
+  // Product suggestions, shown when a negotiation holds at the floor and the
+  // shopper still won't agree, or when they click "No deal". Off by default.
+  // Only "automatic" (live matching by product type, then by shared
+  // collections - see product-suggestions.server.ts) is built so far - the
+  // per-product/collection/universal manual-tiers mode is a later phase, not
+  // yet selectable.
+  suggestionsEnabled Boolean @default(false)
+  // Collection GIDs the merchant has told the collection fallback to ignore -
+  // ones that say how a product is merchandised (Bestsellers, Sale, Ready to
+  // ship), not what it is. Ids only: titles are looked up live on the
+  // Suggestions page, so a renamed or deleted collection never shows stale.
+  suggestionsIgnoredCollectionIds String[] @default([])
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -279,6 +291,15 @@ model NegotiationSession {
   checkoutMechanism   CheckoutMechanism @default(DRAFT_ORDER)
   draftOrderId        String?
   draftOrderExpiresAt DateTime?
+
+  // Product suggestions are shown at most once per session: the first time
+  // the floor is held, or when the shopper clicks "No deal", whichever comes
+  // first - not on every repeat FLOOR_HELD after that, which would just mean
+  // the shopper sees the same carousel again on every message. Flips true
+  // the first time a lookup runs, whether or not any products actually
+  // matched (an empty/no-match result still counts, so a store with a thin
+  // catalog doesn't re-query every single message).
+  suggestionsShown Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

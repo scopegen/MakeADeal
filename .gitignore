@@ -73,3 +73,9 @@ AGENTS.md
 
 # Personal planning notes: kept on this machine only, never pushed to git.
 /V2_*.md
+
+# Local dev/test Shopify app config (separate app registration + dev store,
+# so local testing never touches the production app in shopify.app.toml).
+# Per Shopify's own docs on this exact workflow: gitignore dev configs, only
+# commit production ones. See SETUP.md for the fuller isolated-copy option.
+/shopify.app.noodledev.toml

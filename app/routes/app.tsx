@@ -23,6 +23,18 @@ import { isInternalShop } from "../models/internal-access.server";
 // decline handling; showing a real page with an explicit button the
 // merchant clicks when they're ready is that graceful handling - landing
 // on this same page again after declining isn't a bug, it's correct.
+// Local-only escape hatch: partner-billing.server.ts's subscription check
+// is hardcoded to production Noodle's own Partner org + App GID (see its
+// comments), so it has no way to answer "is this shop subscribed" for a
+// separate dev/test app - it would just always say no. Only ever set in a
+// local .env, never in production's, so production's real gate is
+// unaffected. TODO(2026-09-24): make partner-billing.server.ts's
+// PARTNER_ORG_ID/APP_GID and this file's pricingUrl handle env-aware
+// instead, and set up a real $0 dev-store plan, so local dev exercises the
+// actual billing gate rather than bypassing it.
+// eslint-disable-next-line no-undef
+const skipBillingCheck = process.env.SKIP_BILLING_CHECK === "true";
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
 
@@ -36,7 +48,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     data: { shop: { id: string } };
   };
 
-  const subscribed = await hasActiveSubscription(shopJson.data.shop.id);
+  const subscribed = skipBillingCheck
+    ? true
+    : await hasActiveSubscription(shopJson.data.shop.id);
   const cleanShop = session.shop.replace(".myshopify.com", "");
 
   return {
@@ -61,6 +75,7 @@ export default function App() {
           <s-app-nav>
             <s-link href="/app">Negotiations</s-link>
             <s-link href="/app/rules">Rules</s-link>
+            <s-link href="/app/suggestions">Suggestions</s-link>
             {isInternal && <s-link href="/app/internal">Internal</s-link>}
           </s-app-nav>
           <Outlet />

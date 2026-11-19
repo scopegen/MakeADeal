@@ -312,6 +312,45 @@ const NO_PRICE_COPIES = [
   "Make me an offer when you're ready, and I'll see how close we can get.",
 ];
 
+// Product suggestions, shown at most once per session, at whichever of
+// these comes first (see negotiation-offer.server.ts):
+// - FLOOR_HELD: the shopper keeps offering below the floor. A separate
+//   bubble after the floor-held message; the conversation stays open.
+// - DECLINED: the shopper clicks "No deal". Replaces the plain goodbye, so
+//   the conversation ends on something they can act on, not a dead end.
+// See product-suggestions.server.ts for how the products are chosen.
+//
+// NEAR_OFFER: real matches found under what the shopper actually offered.
+const SUGGESTIONS_INTRO_COPIES = [
+  "That one won't quite work at your price, but here's something that might:",
+  "I can't get there on this one, but you might like these instead:",
+  "This particular item can't go that low, but here's a closer fit:",
+];
+const DECLINE_SUGGESTIONS_INTRO_COPIES = [
+  "No problem. I can't offer this one at your price, but you can explore these instead:",
+  "Understood. This one can't go that low, but these might suit your budget better:",
+  "That's okay. I can't do this one at that price, but take a look at these:",
+];
+// NEAR_ORIGINAL: nothing under their offer, so these are under the original
+// price instead - said plainly rather than pretending it's a close match.
+const SUGGESTIONS_FALLBACK_COPIES = [
+  "I don't have anything in that exact range, but here's what's available:",
+  "Nothing quite that low in this category, but take a look at these:",
+  "I don't have a match for that price, but here's what's currently available:",
+];
+const DECLINE_SUGGESTIONS_FALLBACK_COPIES = [
+  "No problem. I can't offer this one at that price, but you can explore these options:",
+  "Understood. I don't have anything quite that low, but here are some other options you might like:",
+  "That's okay. Nothing here goes that low, but you can explore these instead:",
+];
+// NONE (floor held only): truly nothing else in this product type under the
+// original price - no carousel follows this one. A decline with no matches
+// just uses the normal goodbye (getDeclinedMessage) instead.
+const SUGGESTIONS_NONE_COPIES = [
+  "I don't have anything else to offer in that range right now.",
+  "Unfortunately I don't have another option in that price range at the moment.",
+];
+
 function pick<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
@@ -346,6 +385,23 @@ export function getGreetingLines(
 
 export function getNoPriceMessage() {
   return pick(NO_PRICE_COPIES);
+}
+
+// The bubble that introduces a set of suggestions, by when they're shown and
+// which search pass found them. Returns null only for a decline that found
+// nothing - the caller then sends the normal goodbye with no carousel.
+export function getSuggestionsMessage(
+  moment: "floor_held" | "declined",
+  match: "near_offer" | "near_original" | "none",
+): string | null {
+  if (moment === "declined") {
+    if (match === "near_offer") return pick(DECLINE_SUGGESTIONS_INTRO_COPIES);
+    if (match === "near_original") return pick(DECLINE_SUGGESTIONS_FALLBACK_COPIES);
+    return null;
+  }
+  if (match === "near_offer") return pick(SUGGESTIONS_INTRO_COPIES);
+  if (match === "near_original") return pick(SUGGESTIONS_FALLBACK_COPIES);
+  return pick(SUGGESTIONS_NONE_COPIES);
 }
 
 export function getAcceptedMessage(price: number) {

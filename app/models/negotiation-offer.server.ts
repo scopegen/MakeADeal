@@ -8,8 +8,19 @@ import {
   getAcceptedAtListPriceMessage,
   getAcceptedMessage,
   getNoPriceMessage,
+  getSuggestionsMessage,
 } from "./negotiation-tiers.server";
 import { getDeclinedMessage } from "./negotiation-copy.server";
+import {
+  findSuggestions,
+  type SuggestionsMatch,
+} from "./product-suggestions.server";
+
+// The longest a reply will wait on product suggestions before going out
+// without them. Shopify doesn't publish the app proxy's own timeout, and
+// this codebase has seen three sequential Admin API calls be enough to hit
+// it (see acceptAt below), so this stays well clear of it.
+const SUGGESTIONS_DEADLINE_MS = 3000;
 
 // The decision for one customer action on an already-loaded, already-
 // validated session (owned by the shop, not expired, ACTIVE, limits still
@@ -77,12 +88,97 @@ export async function processNegotiationAction({
     });
   }
 
+  // Product suggestions, at most once per session - at the first held floor
+  // or at "No deal", whichever comes first. null means don't show any: off
+  // for this shop, already shown this session, or the lookup failed or ran
+  // out of time. Only looked up at those two moments, never earlier, since
+  // it's several real Shopify queries and most sessions reach neither. A
+  // failed or slow lookup is logged and skipped rather than thrown or waited
+  // out: a suggestion is a bonus, and it must never break - or hold up past
+  // the app proxy's patience - the decline or floor-held reply it rides
+  // along with. null also leaves suggestionsShown false, so the next held
+  // floor can try again.
+  async function lookUpSuggestionsOnce(
+    offerPrice: number,
+  ): Promise<SuggestionsMatch | null> {
+    if (negotiationSession.suggestionsShown) return null;
+    const shop = await prisma.shop.findUnique({
+      where: { id: negotiationSession.shopId },
+      select: { suggestionsEnabled: true, suggestionsIgnoredCollectionIds: true },
+    });
+    if (!shop?.suggestionsEnabled) return null;
+
+    const lookup = findSuggestions(admin, {
+      productId: negotiationSession.productId,
+      offerPrice,
+      originalPrice: startingPrice,
+      ignoredCollectionIds: shop.suggestionsIgnoredCollectionIds,
+    });
+    // Once the deadline wins, nothing awaits the lookup any more - this keeps
+    // a failure it hits afterwards from surfacing as an unhandled rejection.
+    lookup.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"timed_out">((resolve) => {
+      timer = setTimeout(() => resolve("timed_out"), SUGGESTIONS_DEADLINE_MS);
+    });
+    try {
+      const result = await Promise.race([lookup, deadline]);
+      if (result === "timed_out") {
+        console.warn(
+          `[negotiation-offer] product suggestions took over ${SUGGESTIONS_DEADLINE_MS}ms, skipped`,
+        );
+        return null;
+      }
+      return result;
+    } catch (err) {
+      console.error("[negotiation-offer] product suggestions failed", err);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   if (action === "decline") {
+    // Search under the shopper's own last offer first - that's the budget
+    // they told us. No offer on record (shouldn't happen, "No deal" only
+    // appears under a final offer) falls through to 0, which skips straight
+    // to products under the original price.
+    let suggestions: SuggestionsMatch | null = null;
+    if (!negotiationSession.suggestionsShown) {
+      const lastOffer = await prisma.negotiationOffer.findFirst({
+        where: {
+          sessionId: negotiationSession.id,
+          actor: "CUSTOMER",
+          offerPrice: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { offerPrice: true },
+      });
+      suggestions = await lookUpSuggestionsOnce(Number(lastOffer?.offerPrice ?? 0));
+    }
+    const suggestionsMessage = suggestions
+      ? getSuggestionsMessage("declined", suggestions.kind)
+      : null;
+
     await prisma.negotiationSession.update({
       where: { id: negotiationSession.id },
-      data: { status: "DECLINED" },
+      data: {
+        status: "DECLINED",
+        suggestionsShown: negotiationSession.suggestionsShown || suggestions !== null,
+      },
     });
-    return Response.json({ status: "DECLINED", message: getDeclinedMessage() });
+    // message stays the plain goodbye either way, so a widget build that
+    // predates suggestions still shows something sensible. A widget that
+    // knows about suggestions shows suggestions.message plus the cards
+    // INSTEAD of message when products came back.
+    return Response.json({
+      status: "DECLINED",
+      message: getDeclinedMessage(),
+      suggestions:
+        suggestions && suggestions.kind !== "none" && suggestionsMessage
+          ? { message: suggestionsMessage, products: suggestions.products }
+          : null,
+    });
   }
 
   if (action === "accept") {
@@ -184,9 +280,20 @@ export async function processNegotiationAction({
       // history log shows a monotonically increasing round number per
       // exchange, not repeats.
       const nextRound = negotiationSession.currentRound + 1;
+
+      const suggestions = await lookUpSuggestionsOnce(offerPrice);
+
       await prisma.negotiationSession.update({
         where: { id: negotiationSession.id },
-        data: { currentRound: nextRound, currentOfferPrice: evaluation.price },
+        data: {
+          currentRound: nextRound,
+          currentOfferPrice: evaluation.price,
+          // Flips true once a lookup has run, whether or not it found
+          // anything - a "nothing available" reply still used up this
+          // session's one chance. Stays false while suggestions are off,
+          // so turning them on mid-conversation can still take effect.
+          suggestionsShown: negotiationSession.suggestionsShown || suggestions !== null,
+        },
       });
       await prisma.negotiationOffer.create({
         data: {
@@ -202,6 +309,14 @@ export async function processNegotiationAction({
         floorReached: true,
         message: evaluation.message,
         price: evaluation.price,
+        // products is [] for the "nothing available" case, which still
+        // carries its own message (plain text, no carousel).
+        suggestions: suggestions
+          ? {
+              message: getSuggestionsMessage("floor_held", suggestions.kind) ?? "",
+              products: suggestions.kind === "none" ? [] : suggestions.products,
+            }
+          : null,
       });
     }
 
