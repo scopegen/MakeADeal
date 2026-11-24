@@ -15,6 +15,11 @@ import {
   getPriceDisplay,
   marketPriceInStoreCurrency,
 } from "../models/price-display.server";
+import {
+  BAG_FULL_MESSAGE,
+  bagHasRoomFor,
+  shopperFrom,
+} from "../models/deal-bag.server";
 
 // A variant's price in the shopper's market (Admin API contextualPricing),
 // in that market's currency. Only asked for when the widget sent the
@@ -245,6 +250,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const variantIdRaw = String(formData.get("variantId") ?? "") || null;
+
+  // Multi-product deals: the bag (one checkout) holds at most
+  // MAX_DEAL_ITEMS deals, so a new product isn't negotiated once it's full -
+  // the shopper is told to check out first. Re-negotiating something already
+  // in the bag is fine, it replaces that deal. Checked from our own database
+  // only, before anything is created.
+  const shopper = shopperFrom(request, formData.get("anonymousId"));
+  if (
+    shop.multiDealsEnabled &&
+    !(await bagHasRoomFor(shop.id, shopper, variantIdRaw))
+  ) {
+    return Response.json(
+      { error: "deals_full", message: BAG_FULL_MESSAGE },
+      { status: 409 },
+    );
+  }
   const firstAction = String(formData.get("firstAction") ?? "");
   // The country the product page priced itself for (data-country in
   // negotiation-widget.liquid): the shopper's market, whose price is the one
@@ -414,6 +435,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       action: "counter",
       offerPriceRaw: formData.get("offerPrice"),
       display,
+      shopper,
     });
     return Response.json({
       sessionId: negotiationSession.id,

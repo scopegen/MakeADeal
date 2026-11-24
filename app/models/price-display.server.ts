@@ -49,8 +49,10 @@ const STORE_CURRENCY: PriceDisplay = {
 // aren't real currencies (Beast offers BTC).
 const KNOWN_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
 
+// formData: a POST body, or a GET request's query string - both carry
+// displayCurrency/displayRate the same way.
 export function getPriceDisplay(
-  formData: FormData,
+  formData: { get(name: string): FormDataEntryValue | null },
   shopCurrencyCode: string,
 ): PriceDisplay {
   const code = String(formData.get("displayCurrency") ?? "")

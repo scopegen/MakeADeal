@@ -81,6 +81,14 @@ export default function Privacy() {
           merchant&apos;s own store policies and Shopify&apos;s own privacy
           practices, the same as any other order placed on that store.
         </p>
+        <p>
+          If the merchant lets shoppers negotiate several products and check
+          out once, each deal you agree is added to the same draft order, and
+          your deals are kept together for 48 hours after the last one. They
+          are linked to the same customer ID or browser identifier described
+          above, so the App can show you your saved deals on other product
+          pages.
+        </p>
 
         <h2>2. How we use this information</h2>
         <p>We use the information above only to:</p>
@@ -112,7 +120,9 @@ export default function Privacy() {
           <li>
             Anything that identifies a shopper (a Shopify customer ID, or the
             random identifier stored in the browser) is automatically removed
-            30 days after the negotiation starts.
+            30 days after the negotiation starts. For deals saved together
+            for one checkout, it is removed 30 days after they were last
+            changed.
           </li>
           <li>
             After that, a record that no longer identifies the shopper

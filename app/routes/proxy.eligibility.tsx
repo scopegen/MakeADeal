@@ -4,8 +4,11 @@ import { getShopByDomain } from "../models/negotiation-settings.server";
 import { resolveEffectiveLimits } from "../models/negotiation-engine.server";
 import { getGreetingLines } from "../models/negotiation-tiers.server";
 import { isShownInCountry } from "../models/countries.server";
+import { loadBagForPage, shopperFrom } from "../models/deal-bag.server";
 
 // Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...&variantId=...&country=...
+// (plus anonymousId and displayCurrency/displayRate, for multi-product deals'
+// saved-deals list - see deal-bag.server.ts)
 // Cheap read-only check so the widget only renders its button on products
 // that are actually negotiable, without creating a NegotiationSession just
 // from a page view. variantId is optional - whichever variant was selected
@@ -37,6 +40,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!limits) {
     return Response.json({ eligible: false });
   }
+
+  // Multi-product deals: the shopper's saved deals, if they have any (see
+  // deal-bag.server.ts). Started now so its Shopify lookup runs alongside
+  // the stock check below instead of after it. A failure only means no deal
+  // list on this page - never a hidden widget - so it's caught here, which
+  // also covers the early returns below that never await it.
+  const shopper = shopperFrom(request, url.searchParams.get("anonymousId"));
+  const bagLookup =
+    shop.multiDealsEnabled && (shopper.customerId || shopper.anonymousId)
+      ? loadBagForPage(admin, {
+          shopId: shop.id,
+          settings: shop,
+          shopper,
+          productId,
+          displayParams: url.searchParams,
+        }).catch((err) => {
+          console.error("[proxy.eligibility] deal bag lookup failed", err);
+          return null;
+        })
+      : Promise.resolve(null);
 
   // Out-of-stock products/variants aren't negotiable - there's nothing to
   // fulfill. availableForSale already accounts for a merchant's own
@@ -99,11 +122,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ eligible: false });
   }
 
+  const bag = await bagLookup;
+
   // Merchant-configurable pieces the widget actually reads - see its file
   // header comment for what's still fixed (Send/Accept/Decline text).
   // Comes from whichever rule won (see resolveEffectiveLimits's overlap
   // resolution), not a shop-wide singleton.
   return Response.json({
+    // Multi-product deals: the shopper's saved deals (null when they have
+    // none, or the feature is off), and the "you have N deals saved"
+    // message for this page (null when this product is already one of them).
+    bag: bag?.view ?? null,
+    bagMessage: bag?.message ?? null,
     eligible: true,
     config: {
       headerTitle: limits.rule.headerTitle ?? null,

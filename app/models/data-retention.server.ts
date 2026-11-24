@@ -17,6 +17,10 @@ import prisma from "../db.server";
 // 3. Deletes rate-limit rows older than an hour. Each row is keyed by a
 //    shopper's real IP address and is useless once its 10 minute window has
 //    passed, but nothing ever deleted them.
+// 4. Removes the same shopper ids from multi-product deal bags (DealBag)
+//    nothing has touched for 30 days. A bag is only ever open for 48 hours
+//    after its last deal, so these are long finished; the record (store,
+//    draft order, status) stays, like a negotiation's.
 //
 // Never touched: Shopify draft orders and orders, merchant rules, the shop
 // record. Deleting a whole shop's data on uninstall is the shop/redact
@@ -34,6 +38,8 @@ const RUN_EVERY_MS = 60 * 60 * 1000;
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000;
 // A rate-limit window is 10 minutes. An hour is far past any window in use.
 const RATE_LIMIT_KEEP_MS = 60 * 60 * 1000;
+// Same 30 days a negotiation keeps its shopper ids.
+const DEAL_BAG_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_BATCH_SIZE = 1000;
 const RATE_LIMIT_BATCH_SIZE = 2000;
 // Cap per run, so a huge backlog is worked through over several runs.
@@ -59,7 +65,39 @@ export type RetentionResult = {
   sessionsMarkedExpired: number;
   sessionsScrubbed: number;
   rateLimitRowsDeleted: number;
+  dealBagsScrubbed: number;
 };
+
+// Step 4: shopper ids off deal bags untouched since `cutoff`. Batched like
+// the sessions; scrubbed rows stop matching, so it ends by itself.
+async function scrubOldDealBags(
+  cutoff: Date,
+  dryRun: boolean,
+  batchSize: number,
+): Promise<number> {
+  const where: Prisma.DealBagWhereInput = {
+    updatedAt: { lt: cutoff },
+    OR: [{ customerId: { not: null } }, { anonymousId: { not: null } }],
+  };
+  if (dryRun) return prisma.dealBag.count({ where });
+
+  let total = 0;
+  for (let i = 0; i < MAX_BATCHES_PER_RUN; i++) {
+    const rows = await prisma.dealBag.findMany({
+      where,
+      select: { id: true },
+      take: batchSize,
+    });
+    if (rows.length === 0) break;
+    const { count } = await prisma.dealBag.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { customerId: null, anonymousId: null },
+    });
+    total += count;
+    if (rows.length < batchSize) break;
+  }
+  return total;
+}
 
 // Updates matching sessions a batch at a time. The filter is re-evaluated on
 // every pass and updated rows stop matching it, so this ends by itself once
@@ -152,7 +190,18 @@ export async function runDataRetention(
     dryRun,
   );
 
-  return { sessionsMarkedExpired, sessionsScrubbed, rateLimitRowsDeleted };
+  const dealBagsScrubbed = await scrubOldDealBags(
+    new Date(now.getTime() - DEAL_BAG_KEEP_MS),
+    dryRun,
+    batchSize,
+  );
+
+  return {
+    sessionsMarkedExpired,
+    sessionsScrubbed,
+    rateLimitRowsDeleted,
+    dealBagsScrubbed,
+  };
 }
 
 let running = false;
@@ -168,13 +217,15 @@ async function runScheduled(): Promise<void> {
     if (
       result.sessionsMarkedExpired > 0 ||
       result.sessionsScrubbed > 0 ||
-      result.rateLimitRowsDeleted > 0
+      result.rateLimitRowsDeleted > 0 ||
+      result.dealBagsScrubbed > 0
     ) {
       console.log(
         `[data-retention] ${DRY_RUN ? "DRY RUN, would change" : "changed"}: ` +
           `${result.sessionsMarkedExpired} negotiation(s) marked expired, ` +
           `${result.sessionsScrubbed} negotiation(s) had shopper ids removed, ` +
-          `${result.rateLimitRowsDeleted} rate-limit row(s) deleted`,
+          `${result.rateLimitRowsDeleted} rate-limit row(s) deleted, ` +
+          `${result.dealBagsScrubbed} deal bag(s) had shopper ids removed`,
       );
     }
   } catch (err) {

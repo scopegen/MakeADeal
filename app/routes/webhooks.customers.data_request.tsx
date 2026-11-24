@@ -36,6 +36,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         `[customers/data_request] ${sessions.length} session(s) for customer ${gid} on ${shop}:`,
         JSON.stringify(sessions),
       );
+      // Multi-product deal bags (see DealBag) carry the customer id too.
+      const bags = await prisma.dealBag.findMany({
+        where: { shopId: shopRow.id, customerId: gid },
+      });
+      console.log(
+        `[customers/data_request] ${bags.length} deal bag(s) for customer ${gid} on ${shop}:`,
+        JSON.stringify(bags),
+      );
     }
   }
 

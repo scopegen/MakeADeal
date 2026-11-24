@@ -9,6 +9,7 @@ import {
 } from "../models/negotiation-engine.server";
 import { processNegotiationAction } from "../models/negotiation-offer.server";
 import { getPriceDisplay } from "../models/price-display.server";
+import { shopperFrom } from "../models/deal-bag.server";
 import {
   getDeclinedMessage,
   getExpiredMessage,
@@ -22,6 +23,9 @@ import {
 // displayCurrency + displayRate (optional): the currency the shopper is
 // looking at prices in - offerPrice is in it, and so are the prices in the
 // reply. See price-display.server.ts.
+// anonymousId (optional): the widget's browser id - with multi-product deals
+// on, which shopper's deal bag an accepted deal goes into (see
+// deal-bag.server.ts).
 //
 // Top-level catch-all: an unhandled exception here doesn't just fail this
 // request, it gets replaced by Shopify's own generic fallback page at the
@@ -131,5 +135,6 @@ async function runOfferAction({ request }: ActionFunctionArgs) {
     action,
     offerPriceRaw,
     display: getPriceDisplay(formData, negotiationSession.currencyCode),
+    shopper: shopperFrom(request, formData.get("anonymousId")),
   });
 }

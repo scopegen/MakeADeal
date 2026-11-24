@@ -108,9 +108,34 @@ type WidgetConfig = {
   autoOpen?: { delaySeconds: number } | null;
 };
 
+// Multi-product deals: the shopper's saved deals, all in one checkout (see
+// deal-bag.server.ts). Prices are already in the currency the shopper is
+// looking at. Comes from /eligibility (deals saved on earlier product
+// pages), with an accepted deal from /offer or /start, and from /deals
+// after a removal.
+type DealBag = {
+  items: {
+    sessionId: string;
+    productTitle: string;
+    variantTitle: string | null;
+    imageUrl: string | null;
+    price: number;
+  }[];
+  currencyCode: string;
+  subtotal: number;
+  extraDiscountPercent: number;
+  total: number;
+  checkoutUrl: string;
+  full: boolean;
+};
+
 // What /offer (and the `offer` embedded in /start's response for a shopper's
 // first message) sends back.
 type OfferResponse = {
+  // Multi-product deals only, with an accepted deal: the updated bag and the
+  // "deal saved" message to show after the acceptance message.
+  bag?: DealBag | null;
+  bagMessage?: string | null;
   status?: string;
   error?: string;
   message?: string;
@@ -386,19 +411,32 @@ function ChatWidget({
   // and /start, which hide the widget outside the merchant's chosen
   // countries.
   const countryRef = useRef<string | null>(null);
+  // Multi-product deals (null when off, or nothing saved yet): the deals in
+  // the shopper's bag, shown as the "Your deals" bar in the panel.
+  const [bag, setBag] = useState<DealBag | null>(null);
+  const [dealsOpen, setDealsOpen] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  // "You have N deals saved..." from /eligibility, shown after the greeting
+  // when the panel opens. null when there's nothing to say on this page.
+  const bagMessageRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     detectShopperCountry(storefrontCountry)
-      .then((country) => {
+      .then(async (country) => {
         if (cancelled) return null;
         countryRef.current = country;
         const params = new URLSearchParams({ productId });
         if (initialVariantId) params.set("variantId", initialVariantId);
         if (country) params.set("country", country);
-        return fetch("/apps/negotiate/eligibility?" + params.toString()).then(
-          (res) => res.json(),
+        // Who the shopper is and which currency they're looking at - only
+        // used for their saved deals (multi-product deals).
+        params.set("anonymousId", getAnonymousId());
+        await addDisplayCurrency(params);
+        const res = await fetch(
+          "/apps/negotiate/eligibility?" + params.toString(),
         );
+        return res.json();
       })
       .then((data) => {
         if (cancelled || data === null) return;
@@ -407,6 +445,11 @@ function ChatWidget({
           setConfig(data.config);
           setAccentColor(data.config.primaryColor);
         }
+        if (data && data.bag) setBag(data.bag);
+        bagMessageRef.current =
+          data && typeof data.bagMessage === "string" && data.bagMessage
+            ? data.bagMessage
+            : null;
         // One or two bubbles: our built-in greetings are two, a merchant's
         // own first message may be just the initial message on its own.
         if (
@@ -438,7 +481,11 @@ function ChatWidget({
     setOpen(true);
     if (greetingShownRef.current) return;
     greetingShownRef.current = true;
-    const lines = greetingRef.current;
+    // The saved-deals message (multi-product deals) goes after the greeting,
+    // as one more bot bubble.
+    const lines = bagMessageRef.current
+      ? [...greetingRef.current, bagMessageRef.current]
+      : greetingRef.current;
     setMessages((prev) => [
       ...prev,
       ...lines.map(
@@ -583,6 +630,11 @@ function ChatWidget({
       setCheckoutUrl(data.checkoutUrl ?? null);
       if (typeof data.price === "number") setAcceptedPrice(data.price);
       addMessage("bot", data.message ?? "");
+      // Multi-product deals: the deal went into the shopper's bag - show the
+      // updated bag, and the "deal saved" message right after the
+      // acceptance.
+      if (data.bag) setBag(data.bag);
+      if (data.bagMessage) addMessage("bot", data.bagMessage);
       return;
     }
     if (data.status === "DECLINED") {
@@ -651,6 +703,8 @@ function ChatWidget({
       fd.set("sessionId", sessionIdRef.current);
       fd.set("action", action);
       if (offerPrice != null) fd.set("offerPrice", String(offerPrice));
+      // Which shopper's deal bag an accepted deal joins (multi-product deals).
+      fd.set("anonymousId", getAnonymousId());
       await addDisplayCurrency(fd);
       const res = await fetch("/apps/negotiate/offer", {
         method: "POST",
@@ -662,6 +716,38 @@ function ChatWidget({
       addMessage("system", "Something went wrong — please try again.");
     } finally {
       setSending(false);
+    }
+  }
+
+  // "Remove" in the Your deals list (multi-product deals). The server
+  // answers with the updated bag - or none once it's empty, which also takes
+  // the bar away.
+  async function removeDeal(dealSessionId: string) {
+    setRemoving(true);
+    try {
+      const fd = new FormData();
+      fd.set("action", "remove");
+      fd.set("sessionId", dealSessionId);
+      fd.set("anonymousId", getAnonymousId());
+      await addDisplayCurrency(fd);
+      const res = await fetch("/apps/negotiate/deals", {
+        method: "POST",
+        body: fd,
+      });
+      const data = await res.json();
+      if (data && "bag" in data) {
+        setBag(data.bag ?? null);
+        if (!data.bag) setDealsOpen(false);
+        // The deal made on this page is gone from the bag, so its checkout
+        // link (the bag's, possibly now deleted) mustn't be offered either.
+        if (dealSessionId === sessionIdRef.current) setCheckoutUrl(null);
+      } else {
+        addMessage("system", "Couldn't remove that deal — please try again.");
+      }
+    } catch {
+      addMessage("system", "Couldn't remove that deal — please try again.");
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -731,10 +817,16 @@ function ChatWidget({
   // of it. handleOpen is safe to call again while already open (setOpen
   // is a no-op if already true, and the greeting is only ever added once),
   // so leaving this clickable the whole time is harmless.
+  const dealCount = bag?.items.length ?? 0;
   const launcher = (
     <button type="button" onClick={handleOpen} className="sgn-launcher">
       <ChatIcon />
       {config?.launcherButtonText || LAUNCHER_TEXT}
+      {/* Multi-product deals: a reminder on every product page that deals
+        are waiting in one checkout. */}
+      {dealCount > 0 && (
+        <span className="sgn-launcher-badge">{dealCount} saved</span>
+      )}
     </button>
   );
 
@@ -769,6 +861,88 @@ function ChatWidget({
           ×
         </button>
       </div>
+
+      {/* Multi-product deals: the shopper's saved deals, collapsed to one
+        line until opened. Checkout pays for all of them at once. */}
+      {bag && dealCount > 0 && (
+        <div className="sgn-deals">
+          <button
+            type="button"
+            className="sgn-deals-toggle"
+            onClick={() => setDealsOpen((isOpen) => !isOpen)}
+            aria-expanded={dealsOpen}
+          >
+            <span>
+              Your deals ({dealCount})
+            </span>
+            <span className="sgn-deals-toggle-total">
+              {formatMoney(bag.total, bag.currencyCode)}
+              <span aria-hidden="true">{dealsOpen ? " ▴" : " ▾"}</span>
+            </span>
+          </button>
+          {dealsOpen && (
+            <div className="sgn-deals-body">
+              <div className="sgn-deals-list">
+                {bag.items.map((item) => (
+                  <div key={item.sessionId} className="sgn-deal-row">
+                    {item.imageUrl ? (
+                      <img
+                        src={item.imageUrl}
+                        alt=""
+                        className="sgn-deal-image"
+                      />
+                    ) : (
+                      <div className="sgn-deal-image" />
+                    )}
+                    <div className="sgn-deal-info">
+                      <div className="sgn-deal-title">{item.productTitle}</div>
+                      {item.variantTitle && (
+                        <div className="sgn-deal-variant">
+                          {item.variantTitle}
+                        </div>
+                      )}
+                    </div>
+                    <div className="sgn-deal-price">
+                      {formatMoney(item.price, bag.currencyCode)}
+                    </div>
+                    <button
+                      type="button"
+                      className="sgn-deal-remove"
+                      onClick={() => removeDeal(item.sessionId)}
+                      disabled={removing}
+                      aria-label={`Remove ${item.productTitle}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {bag.extraDiscountPercent > 0 && (
+                <div className="sgn-deals-line">
+                  <span>
+                    Extra {Math.round(bag.extraDiscountPercent * 100) / 100}% off
+                  </span>
+                  <span>
+                    −{formatMoney(bag.subtotal - bag.total, bag.currencyCode)}
+                  </span>
+                </div>
+              )}
+              <div className="sgn-deals-line sgn-deals-sum">
+                <span>Total</span>
+                <span>{formatMoney(bag.total, bag.currencyCode)}</span>
+              </div>
+              <a
+                href={bag.checkoutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sgn-checkout-link sgn-deals-checkout"
+              >
+                Checkout ({dealCount} {dealCount === 1 ? "item" : "items"})
+              </a>
+            </div>
+          )}
+        </div>
+      )}
 
       <div ref={scrollRef} className="sgn-message-list">
         {messages.map((m, i) => {
@@ -864,15 +1038,39 @@ function ChatWidget({
         </div>
       )}
 
-      {checkoutUrl && (
-        <a
-          href={checkoutUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="sgn-checkout-link"
-        >
-          Complete checkout
-        </a>
+      {/* Multi-product deals: check out everything in the bag now, or keep
+        shopping and negotiate more products into the same checkout. Without
+        a bag (the feature is off) a deal has its own checkout, as before. */}
+      {status === "accepted" && bag && dealCount > 0 ? (
+        <div className="sgn-accepted-actions">
+          <a
+            href={bag.checkoutUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sgn-checkout-link"
+          >
+            Checkout ({dealCount} {dealCount === 1 ? "item" : "items"})
+          </a>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="sgn-btn-secondary sgn-keep-shopping"
+          >
+            Keep shopping
+          </button>
+        </div>
+      ) : (
+        checkoutUrl &&
+        !bag && (
+          <a
+            href={checkoutUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sgn-checkout-link"
+          >
+            Complete checkout
+          </a>
+        )
       )}
 
       {showInput && (
@@ -1057,6 +1255,51 @@ const STYLESHEET = `
   transition: transform 0.12s ease;
 }
 .sgn-checkout-link:hover { transform: translateY(-1px); }
+.sgn-launcher-badge {
+  margin-left: 4px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(255,255,255,0.22); font-size: 11.5px; font-weight: 700;
+}
+.sgn-deals { border-bottom: 1px solid #eee; background: #fff; }
+.sgn-deals-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 16px; border: none; background: none; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: #111; text-align: left;
+}
+.sgn-deals-toggle:hover { background: #fafafa; }
+.sgn-deals-toggle-total { color: var(--sgn-accent); font-weight: 700; white-space: nowrap; }
+.sgn-deals-body { padding: 0 16px 12px; }
+.sgn-deals-list {
+  display: flex; flex-direction: column; gap: 8px; max-height: 150px; overflow-y: auto;
+  scrollbar-width: thin; padding: 2px 0 8px;
+}
+.sgn-deal-row { display: flex; align-items: center; gap: 8px; }
+.sgn-deal-image {
+  width: 36px; height: 36px; flex-shrink: 0; object-fit: cover; border-radius: 6px;
+  background: #f0f1f3; display: block;
+}
+.sgn-deal-info { flex: 1; min-width: 0; }
+.sgn-deal-title {
+  font-size: 12px; font-weight: 600; color: #111;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sgn-deal-variant { font-size: 11px; color: #777; }
+.sgn-deal-price { font-size: 12px; font-weight: 700; color: #111; white-space: nowrap; }
+.sgn-deal-remove {
+  width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; border: none;
+  background: #f0f1f3; color: #555; cursor: pointer; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.sgn-deal-remove:hover:not(:disabled) { background: #e4e5e8; }
+.sgn-deal-remove:disabled { opacity: 0.5; cursor: default; }
+.sgn-deals-line {
+  display: flex; justify-content: space-between; font-size: 12px; color: #555;
+  padding-top: 4px;
+}
+.sgn-deals-sum { font-weight: 700; color: #111; font-size: 13px; padding-bottom: 10px; }
+.sgn-deals-checkout { margin: 0; }
+.sgn-accepted-actions { display: flex; flex-direction: column; gap: 8px; margin: 0 16px 16px; }
+.sgn-accepted-actions .sgn-checkout-link { margin: 0; }
+.sgn-keep-shopping { width: 100%; padding: 11px 16px; }
 .sgn-footer { border-top: 1px solid #eee; padding: 12px 16px 16px; }
 .sgn-input-row { display: flex; gap: 8px; }
 .sgn-input {

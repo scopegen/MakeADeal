@@ -400,7 +400,14 @@ export async function getStoreDetail(
     where: { shopId, status: "ACCEPTED", draftOrderId: { not: null } },
     orderBy: { createdAt: "desc" },
     take: CONVERSION_LOOKUP_LIMIT,
-    select: { productId: true, draftOrderId: true, currentOfferPrice: true },
+    select: {
+      productId: true,
+      draftOrderId: true,
+      currentOfferPrice: true,
+      // A multi-product deal's extra discount comes off every item in its
+      // bag, so it's part of what the sale was really worth.
+      dealBag: { select: { extraDiscountPercent: true } },
+    },
   });
   const { states: draftStates, error: conversionError } =
     await lookupDraftOrderStates(
@@ -433,8 +440,11 @@ export async function getStoreDetail(
     conversion.checked++;
     const state = classifyDraftOrder(draftStates.get(draftId));
     if (state === "converted") {
+      const extraDiscount = Number(s.dealBag?.extraDiscountPercent ?? 0);
       const value =
-        s.currentOfferPrice === null ? 0 : Number(s.currentOfferPrice);
+        s.currentOfferPrice === null
+          ? 0
+          : Number(s.currentOfferPrice) * (1 - extraDiscount / 100);
       conversion.converted++;
       conversion.convertedValue += value;
       const perProduct = convertedByProduct.get(s.productId) ?? {

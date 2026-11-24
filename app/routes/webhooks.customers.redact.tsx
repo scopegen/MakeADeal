@@ -33,8 +33,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const { count } = await prisma.negotiationSession.deleteMany({
         where: { shopId: shopRow.id, customerId: gid },
       });
+      // Their multi-product deal bags too (see DealBag) - they carry the
+      // same customer id. Any deal left in one from before they logged in
+      // only had their anonymous browser id, and just loses its bag link.
+      const bags = await prisma.dealBag.deleteMany({
+        where: { shopId: shopRow.id, customerId: gid },
+      });
       console.log(
-        `[customers/redact] deleted ${count} session(s) for customer ${gid} on ${shop}`,
+        `[customers/redact] deleted ${count} session(s) and ${bags.count} deal bag(s) for customer ${gid} on ${shop}`,
       );
     }
   }

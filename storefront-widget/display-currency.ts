@@ -107,9 +107,11 @@ export async function detectDisplayCurrency(): Promise<DisplayCurrency | null> {
   return null;
 }
 
-// Adds displayCurrency/displayRate to a request to /start or /offer, when
-// the page is showing another currency.
-export async function addDisplayCurrency(fd: FormData) {
+// Adds displayCurrency/displayRate to a request (a /start or /offer body, or
+// /eligibility's query string), when the page is showing another currency.
+export async function addDisplayCurrency(fd: {
+  set(name: string, value: string): void;
+}) {
   const display = await detectDisplayCurrency();
   if (display) {
     fd.set("displayCurrency", display.code);

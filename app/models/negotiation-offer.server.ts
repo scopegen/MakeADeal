@@ -16,6 +16,7 @@ import {
   type SuggestionsMatch,
 } from "./product-suggestions.server";
 import { showSuggestedProducts, type PriceDisplay } from "./price-display.server";
+import { addDealToBag, getDealSettings, type Shopper } from "./deal-bag.server";
 
 // The longest a reply will wait on product suggestions before going out
 // without them. Shopify doesn't publish the app proxy's own timeout, and
@@ -36,6 +37,9 @@ const SUGGESTIONS_DEADLINE_MS = 3000;
 // price-display.server.ts). Only the typed offer coming in and the prices
 // written into replies go through it - every number in here, and every
 // `price` in a response, is in the store's currency.
+//
+// shopper: who's asking (see shopperFrom in deal-bag.server.ts) - with
+// multi-product deals on, an accepted deal goes into this shopper's bag.
 export async function processNegotiationAction({
   admin,
   negotiationSession,
@@ -43,6 +47,7 @@ export async function processNegotiationAction({
   action,
   offerPriceRaw,
   display,
+  shopper,
 }: {
   admin: AdminGraphqlClient;
   negotiationSession: NegotiationSession;
@@ -50,10 +55,57 @@ export async function processNegotiationAction({
   action: string;
   offerPriceRaw: FormDataEntryValue | null;
   display: PriceDisplay;
+  shopper: Shopper;
 }): Promise<Response> {
   const startingPrice = Number(negotiationSession.startingPrice);
 
   async function acceptAt(price: number, atOrAboveListPrice = false) {
+    const message = atOrAboveListPrice
+      ? getAcceptedAtListPriceMessage(price, display.formatPrice)
+      : getAcceptedMessage(price, display.formatPrice);
+
+    // Multi-product deals: the deal joins the shopper's bag - one shared
+    // draft order - instead of getting a draft order of its own. See
+    // deal-bag.server.ts. checkoutUrl is still sent, for older cached
+    // widget scripts that only know that field.
+    const dealSettings = await getDealSettings(negotiationSession.shopId);
+    if (dealSettings?.multiDealsEnabled) {
+      let added: Awaited<ReturnType<typeof addDealToBag>>;
+      try {
+        added = await addDealToBag(admin, {
+          shopId: negotiationSession.shopId,
+          settings: dealSettings,
+          shopper,
+          session: negotiationSession,
+          price,
+          display,
+        });
+      } catch (err) {
+        return Response.json(
+          { error: "draft_order_failed", detail: String(err) },
+          { status: 502 },
+        );
+      }
+      await prisma.negotiationSession.update({
+        where: { id: negotiationSession.id },
+        data: {
+          status: "ACCEPTED",
+          currentOfferPrice: price,
+          draftOrderId: added.draftOrderId,
+          draftOrderExpiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+          dealBagId: added.bagId,
+        },
+      });
+      return Response.json({
+        status: "ACCEPTED",
+        message,
+        price,
+        checkoutUrl: added.checkoutUrl,
+        bag: added.view,
+        bagMessage: added.message,
+      });
+    }
+
     let draftOrder: { id: string; invoiceUrl: string };
     try {
       // Both cached on the session at /start - no extra API round-trip
@@ -88,9 +140,7 @@ export async function processNegotiationAction({
 
     return Response.json({
       status: "ACCEPTED",
-      message: atOrAboveListPrice
-        ? getAcceptedAtListPriceMessage(price, display.formatPrice)
-        : getAcceptedMessage(price, display.formatPrice),
+      message,
       price,
       checkoutUrl: draftOrder.invoiceUrl,
     });

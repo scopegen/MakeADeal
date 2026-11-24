@@ -20,27 +20,27 @@ datasource db {
 // shop/redact (which fires 48h after uninstall) has something stable to key
 // deletion off of. Upserted in the `afterAuth` hook in shopify.server.ts.
 model Shop {
-  id            String    @id @default(cuid())
-  shopDomain    String    @unique
-  installedAt   DateTime  @default(now())
-  uninstalledAt DateTime?
+  id                              String      @id @default(cuid())
+  shopDomain                      String      @unique
+  installedAt                     DateTime    @default(now())
+  uninstalledAt                   DateTime?
   // Cached Shopify App Pricing plan handle, so the entitlement-check seam
   // (see the negotiation engine, built later) can gate features without an
   // API call on every request. Kept null/unset until pricing is actually
   // wired up post-submission - nothing reads this yet.
-  planHandle    String?
+  planHandle                      String?
   // Product suggestions, shown when a negotiation holds at the floor and the
   // shopper still won't agree, or when they click "No deal". Off by default.
   // Only "automatic" (live matching by product type, then by shared
   // collections - see product-suggestions.server.ts) is built so far - the
   // per-product/collection/universal manual-tiers mode is a later phase, not
   // yet selectable.
-  suggestionsEnabled Boolean @default(false)
+  suggestionsEnabled              Boolean     @default(false)
   // Collection GIDs the merchant has told the collection fallback to ignore -
   // ones that say how a product is merchandised (Bestsellers, Sale, Ready to
   // ship), not what it is. Ids only: titles are looked up live on the
   // Suggestions page, so a renamed or deleted collection never shows stale.
-  suggestionsIgnoredCollectionIds String[] @default([])
+  suggestionsIgnoredCollectionIds String[]    @default([])
   // The merchant's country list, as ISO codes (IN, AE, ...), and what it
   // means: ONLY = the widget shows only in these countries, EXCEPT = it shows
   // everywhere but these. An empty list means every country, in either mode.
@@ -48,16 +48,80 @@ model Shop {
   // detection, which the widget sends to /eligibility and /start - see
   // detectShopperCountry in widget.tsx and isShownInCountry in
   // countries.server.ts.
-  countryMode  CountryMode @default(ONLY)
-  countryCodes String[]    @default([])
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  countryMode                     CountryMode @default(ONLY)
+  countryCodes                    String[]    @default([])
+  // Multi-product deals (see deal-bag.server.ts): a shopper's deals on
+  // several products all go into one draft order, so one checkout pays for
+  // everything. Off by default - each deal then gets its own checkout, as
+  // before this existed.
+  multiDealsEnabled               Boolean     @default(false)
+  // Optional extra % off the whole order, by how many products are in it:
+  // [2 products, 3 products, 4 products, 5 or more]. 0 means nothing extra
+  // at that count; empty means no extra discount at all. See
+  // extraDiscountFor in deal-bag-copy.ts.
+  multiDealDiscounts              Float[]     @default([])
+  // The merchant's own wording for the two multi-product messages, with
+  // placeholders (see deal-bag-copy.ts). null = Noodle's default, which
+  // changes to match the discounts above.
+  multiDealSavedMessage           String?
+  multiDealNextMessage            String?
+  createdAt                       DateTime    @default(now())
+  updatedAt                       DateTime    @updatedAt
 
   negotiationRules    NegotiationRule[]
   ladders             Ladder[]
   negotiationSessions NegotiationSession[]
   offerLinks          OfferLink[]
   rateLimitBuckets    RateLimitBucket[]
+  dealBags            DealBag[]
+}
+
+// See DealBag.status.
+enum DealBagStatus {
+  OPEN
+  CHECKED_OUT
+  CLOSED
+}
+
+// Multi-product deals (Shop.multiDealsEnabled): one shopper's accepted deals
+// across several products, kept together in ONE draft order so a single
+// checkout pays for all of them. Each deal is still its own
+// NegotiationSession, pointing here through dealBagId. See
+// deal-bag.server.ts.
+model DealBag {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // Who the bag belongs to - the same ids as NegotiationSession: the
+  // Shopify customer when logged in, otherwise the widget's random browser
+  // id. Both are kept when both are known, so a shopper who logs in halfway
+  // still finds their bag. Removed by the 30-day retention purge (see
+  // data-retention.server.ts).
+  customerId  String?
+  anonymousId String?
+
+  draftOrderId         String
+  checkoutUrl          String
+  // The extra % off the whole order the draft order currently carries (0 =
+  // none) - Shop.multiDealDiscounts for the number of deals in the bag.
+  extraDiscountPercent Decimal @default(0) @db.Decimal(5, 2)
+
+  // OPEN: deals can still be added. CHECKED_OUT: Shopify reported the draft
+  // order completed (paid). CLOSED: emptied by the shopper, or the draft
+  // order could no longer be updated (deleted in the admin, for example).
+  // An OPEN bag past expiresAt is treated as gone too.
+  status    DealBagStatus @default(OPEN)
+  // 48 hours after the last deal was added.
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions NegotiationSession[]
+
+  @@index([shopId, customerId])
+  @@index([shopId, anonymousId])
 }
 
 // ---------------------------------------------------------------------------
@@ -151,23 +215,23 @@ model NegotiationRule {
   // blank, nothing hardcoded here either.
   name String?
 
-  scopeType RuleScopeType @default(ALL_PRODUCTS)
+  scopeType          RuleScopeType @default(ALL_PRODUCTS)
   // Set only when scopeType = "COLLECTION". collectionTitle is cached from
   // the resource picker at selection time specifically so redisplaying it
   // doesn't need its own read_collections scope - see the engine's live
   // membership check for why collectionId itself still isn't enough on its
   // own (it doesn't mirror which products are actually in it).
-  collectionId    String?
-  collectionTitle String?
+  collectionId       String?
+  collectionTitle    String?
   // Set only when scopeType = "PRODUCT_GROUP". Shopify Product GIDs.
-  productIds String[] @default([])
+  productIds         String[]      @default([])
   // Carve-outs from an ALL_PRODUCTS or COLLECTION rule - meaningless for
   // PRODUCT_GROUP, which is already an explicit inclusion list (excluding
   // from it just means not including it in productIds in the first place).
   // Checked live in resolveEffectiveLimits alongside the collection
   // membership check, same "not mirrored, checked at negotiation time"
   // reasoning as collectionId itself.
-  excludedProductIds String[] @default([])
+  excludedProductIds String[]      @default([])
 
   // Same nullable-by-default reasoning as the old NegotiationSettings had:
   // unset means this rule can't actually go live yet, never "assume some
@@ -248,7 +312,7 @@ model LadderStep {
   stepNumber Int
 
   discountType  DiscountType
-  discountValue Decimal @db.Decimal(10, 2)
+  discountValue Decimal      @db.Decimal(10, 2)
 
   messageTemplate String?
 
@@ -262,7 +326,7 @@ model NegotiationSession {
   shopId String
   shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
-  productId String
+  productId    String
   // Resolved to the product's default variant at session creation (v1 is
   // product-level, not variant-level - see the brief's stated limitation).
   // Cached here, along with currencyCode below, specifically so accepting
@@ -270,7 +334,7 @@ model NegotiationSession {
   // already makes one unavoidable API call (draftOrderCreate); every extra
   // round-trip before it is added latency stacked on a request already
   // being proxied through the dev tunnel.
-  variantId String @default("")
+  variantId    String @default("")
   currencyCode String @default("")
 
   // Only one of these is set: a logged-in visitor gets customerId (needed so
@@ -286,21 +350,21 @@ model NegotiationSession {
   // Doubles as the tier index into the assigned segment's tier table (0 =
   // no offer yet, 1 = tier 1, 2 = tier 2, ...) - same field the ladder
   // system used for round tracking, repurposed rather than duplicated.
-  currentRound       Int      @default(0)
+  currentRound      Int              @default(0)
   // Locked in on the customer's first valid offer - see the enum comment.
-  segment            CustomerSegment?
+  segment           CustomerSegment?
   // The variant's price in the shopper's market - what the product page
   // showed them (with Shopify Markets, a store can price the same product
   // differently per country) - in the store's currency. See
   // marketPriceInStoreCurrency in price-display.server.ts.
-  startingPrice      Decimal  @db.Decimal(10, 2)
+  startingPrice     Decimal          @db.Decimal(10, 2)
   // The variant's own price, before any market pricing. startingPrice /
   // basePrice is the market's price ratio, used to price product suggestions
   // for the same market (see lookUpSuggestionsOnce in
   // negotiation-offer.server.ts). Null for sessions from before markets were
   // supported - treated as a ratio of 1.
-  basePrice          Decimal? @db.Decimal(10, 2)
-  currentOfferPrice  Decimal? @db.Decimal(10, 2)
+  basePrice         Decimal?         @db.Decimal(10, 2)
+  currentOfferPrice Decimal?         @db.Decimal(10, 2)
 
   // Which rule won this session (per the "highest max discount %" overlap
   // resolution) and which ladder it pointed to at that moment - both frozen
@@ -314,8 +378,14 @@ model NegotiationSession {
   ladderIdSnapshot String?
 
   checkoutMechanism   CheckoutMechanism @default(DRAFT_ORDER)
+  // With multi-product deals, several accepted sessions share one draft
+  // order (their DealBag's). Cleared again if the shopper removes the deal
+  // from their bag, so a removed deal never counts as a sale.
   draftOrderId        String?
   draftOrderExpiresAt DateTime?
+  // The multi-product deal bag this accepted deal is in, if any.
+  dealBagId           String?
+  dealBag             DealBag?          @relation(fields: [dealBagId], references: [id], onDelete: SetNull)
 
   // Product suggestions are shown at most once per session: the first time
   // the floor is held, or when the shopper clicks "No deal", whichever comes
@@ -337,6 +407,7 @@ model NegotiationSession {
 
   @@index([shopId, status])
   @@index([expiresAt])
+  @@index([dealBagId])
 }
 
 model NegotiationOffer {
@@ -364,7 +435,7 @@ model OfferLink {
 
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 }
 
 // Lightweight fixed-window rate-limit counters (per shop + IP-or-session
@@ -382,21 +453,21 @@ model RateLimitBucket {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
