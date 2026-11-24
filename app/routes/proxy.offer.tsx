@@ -8,6 +8,7 @@ import {
   resolveEffectiveLimits,
 } from "../models/negotiation-engine.server";
 import { processNegotiationAction } from "../models/negotiation-offer.server";
+import { getPriceDisplay } from "../models/price-display.server";
 import {
   getDeclinedMessage,
   getExpiredMessage,
@@ -18,6 +19,9 @@ import {
 // Body: sessionId (required), action ("counter" | "accept" | "decline"),
 // offerPrice (required when action=counter, but a missing/unparseable price
 // no longer hard-errors - see the "no price found" branch below).
+// displayCurrency + displayRate (optional): the currency the shopper is
+// looking at prices in - offerPrice is in it, and so are the prices in the
+// reply. See price-display.server.ts.
 //
 // Top-level catch-all: an unhandled exception here doesn't just fail this
 // request, it gets replaced by Shopify's own generic fallback page at the
@@ -126,5 +130,6 @@ async function runOfferAction({ request }: ActionFunctionArgs) {
     limits,
     action,
     offerPriceRaw,
+    display: getPriceDisplay(formData, negotiationSession.currencyCode),
   });
 }

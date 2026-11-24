@@ -68,8 +68,8 @@ export default function Privacy() {
             hour.
           </li>
           <li>
-            The country you&apos;re shopping in on the store (the one the store
-            shows you prices for), used only to check whether the merchant
+            The country you&apos;re in, as detected by Shopify from your
+            internet connection, used only to check whether the merchant
             offers negotiation in that country. It is not stored.
           </li>
         </ul>

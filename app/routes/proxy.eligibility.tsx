@@ -26,12 +26,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ eligible: false });
   }
 
-  // Checked before anything that costs an Admin API call. country is the
-  // one the shopper is shopping in (see data-country in
-  // negotiation-widget.liquid).
-  if (
-    !isShownInCountry(shop.allowedCountryCodes, url.searchParams.get("country"))
-  ) {
+  // Checked before anything that costs an Admin API call. country is where
+  // the shopper is, per Shopify's detection (see detectShopperCountry in
+  // widget.tsx).
+  if (!isShownInCountry(shop, url.searchParams.get("country"))) {
     return Response.json({ eligible: false });
   }
 

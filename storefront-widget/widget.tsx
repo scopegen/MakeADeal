@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
+import { addDisplayCurrency } from "./display-currency";
 
 // Scopegen Negotiator - storefront widget, React build.
 //
@@ -41,9 +42,11 @@ type SuggestedProduct = {
 };
 
 // The card price the way shoppers are used to seeing money on this store
-// ("$6,500.00", "₹6,500.00") rather than a bare "6500.00": the currency
-// Shopify reported for the price, in the page's own language. Falls back to
-// the plain number if the browser doesn't know the currency or language.
+// ("$6,500.00", "₹6,500.00") rather than a bare "6500.00": in the currency
+// the server priced the card in (the store's, or the one the shopper is
+// looking at prices in - see display-currency.ts), in the page's own
+// language. Falls back to the plain number if the browser doesn't know the
+// currency or language.
 function formatMoney(amount: number, currencyCode: string) {
   try {
     return new Intl.NumberFormat(document.documentElement.lang || undefined, {
@@ -60,11 +63,15 @@ function formatMoney(amount: number, currencyCode: string) {
 // window.Shopify.routes.root - so the link keeps the shopper on the same
 // domain and language they're browsing in. Falls back to "/" if a theme
 // doesn't expose it.
-function productUrl(handle: string) {
-  const root =
+function storefrontRoot() {
+  return (
     (window as unknown as { Shopify?: { routes?: { root?: string } } }).Shopify
-      ?.routes?.root || "/";
-  return `${root}products/${encodeURIComponent(handle)}`;
+      ?.routes?.root || "/"
+  );
+}
+
+function productUrl(handle: string) {
+  return `${storefrontRoot()}products/${encodeURIComponent(handle)}`;
 }
 
 type Message = {
@@ -151,6 +158,54 @@ function getAnonymousId() {
   } catch {
     return "anon_" + Date.now().toString(36);
   }
+}
+
+const COUNTRY_KEY = "sgnShopperCountry";
+const COUNTRY_LOOKUP_TIMEOUT_MS = 1500;
+
+// The country the shopper is actually in, for the merchant's Countries
+// setting: Shopify's own IP-based detection, from its documented
+// browsing_context_suggestions endpoint on the store's own domain. Not
+// Liquid's localization.country on its own - that's the store's market for
+// the shopper, and a shopper from a country the store has no market for is
+// put in the store's main market instead (an Indian shopper on a US-only
+// store reads as US). storefrontCountry (that Liquid value) is only the
+// fallback, for when detection fails or takes too long - better than
+// sending nothing. Remembered for the browser tab's session, so it's looked
+// up once, not on every product page.
+async function detectShopperCountry(
+  storefrontCountry: string | null,
+): Promise<string | null> {
+  try {
+    const cached = sessionStorage.getItem(COUNTRY_KEY);
+    if (cached && /^[A-Z]{2}$/.test(cached)) return cached;
+  } catch {
+    // ignore - just look it up again
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), COUNTRY_LOOKUP_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      storefrontRoot() +
+        "browsing_context_suggestions.json?country%5Benabled%5D=true&language%5Benabled%5D=false",
+      { signal: controller.signal },
+    );
+    const data = await res.json();
+    const code = data?.detected_values?.country?.handle;
+    if (typeof code === "string" && /^[A-Z]{2}$/.test(code)) {
+      try {
+        sessionStorage.setItem(COUNTRY_KEY, code);
+      } catch {
+        // ignore
+      }
+      return code;
+    }
+  } catch {
+    // network error, timeout, or not JSON - fall back below
+  } finally {
+    clearTimeout(timer);
+  }
+  return storefrontCountry;
 }
 
 // Pattern-matching price extraction - the first number-looking sequence in
@@ -292,14 +347,14 @@ function TagIcon() {
 function ChatWidget({
   productId,
   initialVariantId,
-  country,
+  storefrontCountry,
 }: {
   productId: string;
   initialVariantId: string | null;
-  // The country the shopper is shopping in (data-country in the liquid
-  // block). Sent to /eligibility and /start, which hide the widget outside
-  // the merchant's chosen countries.
-  country: string | null;
+  // The store's market country for this shopper (data-country in the liquid
+  // block): the market the page's prices are for, sent to /start as
+  // marketCountry, and the fallback for detectShopperCountry.
+  storefrontCountry: string | null;
 }) {
   const [eligible, setEligible] = useState(false);
   const [config, setConfig] = useState<WidgetConfig | null>(null);
@@ -327,14 +382,26 @@ function ChatWidget({
   // Set once the shopper has opened or closed the panel themselves, so a
   // pending auto-open timer never reopens something they just closed.
   const manualRef = useRef(false);
+  // Where the shopper is (see detectShopperCountry). Sent to /eligibility
+  // and /start, which hide the widget outside the merchant's chosen
+  // countries.
+  const countryRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams({ productId });
-    if (initialVariantId) params.set("variantId", initialVariantId);
-    if (country) params.set("country", country);
-    fetch("/apps/negotiate/eligibility?" + params.toString())
-      .then((res) => res.json())
+    let cancelled = false;
+    detectShopperCountry(storefrontCountry)
+      .then((country) => {
+        if (cancelled) return null;
+        countryRef.current = country;
+        const params = new URLSearchParams({ productId });
+        if (initialVariantId) params.set("variantId", initialVariantId);
+        if (country) params.set("country", country);
+        return fetch("/apps/negotiate/eligibility?" + params.toString()).then(
+          (res) => res.json(),
+        );
+      })
       .then((data) => {
+        if (cancelled || data === null) return;
         setEligible(Boolean(data && data.eligible));
         if (data && data.config) {
           setConfig(data.config);
@@ -354,8 +421,13 @@ function ChatWidget({
           greetingRef.current = data.greeting;
         }
       })
-      .catch(() => setEligible(false));
-  }, [productId, initialVariantId, country]);
+      .catch(() => {
+        if (!cancelled) setEligible(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productId, initialVariantId, storefrontCountry]);
 
   // Opening the panel (by click or automatically) only shows it and the
   // greeting - it deliberately creates nothing on the server. A negotiation
@@ -458,9 +530,14 @@ function ChatWidget({
       fd.set("anonymousId", getAnonymousId());
       const variantId = readSelectedVariantId(initialVariantId);
       if (variantId) fd.set("variantId", variantId);
-      if (country) fd.set("country", country);
+      if (countryRef.current) fd.set("country", countryRef.current);
+      // The market the page's prices are for, so the negotiation starts from
+      // the price the shopper actually sees (stores can price countries
+      // differently) - see marketCountry in proxy.start.tsx.
+      if (storefrontCountry) fd.set("marketCountry", storefrontCountry);
       fd.set("firstAction", "counter");
       if (price != null) fd.set("offerPrice", String(price));
+      await addDisplayCurrency(fd);
       const res = await fetch("/apps/negotiate/start", {
         method: "POST",
         body: fd,
@@ -574,6 +651,7 @@ function ChatWidget({
       fd.set("sessionId", sessionIdRef.current);
       fd.set("action", action);
       if (offerPrice != null) fd.set("offerPrice", String(offerPrice));
+      await addDisplayCurrency(fd);
       const res = await fetch("/apps/negotiate/offer", {
         method: "POST",
         body: fd,
@@ -1023,7 +1101,7 @@ function bootstrap() {
     <ChatWidget
       productId={productId}
       initialVariantId={mount.dataset.variantId ?? null}
-      country={mount.dataset.country || null}
+      storefrontCountry={mount.dataset.country || null}
     />,
   );
 }

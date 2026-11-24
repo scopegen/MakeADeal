@@ -26,11 +26,14 @@
   silent no-op anywhere else (per the same pageType guard), so there's no
   reason to let a merchant add it to a page it can't do anything on.
 
-  data-country is the country the shopper is shopping in - the one Shopify
-  prices and sells to them in, which changes if they pick another country
-  in the store's country selector (the page reloads when they do). The
-  widget passes it to the server, which hides the widget outside the
-  countries the merchant chose in the app's Countries page.
+  data-country is the store's market country for this shopper - the market
+  this page's prices are for. The widget sends it to /start so the
+  negotiation starts from that market's price (see marketCountry in
+  proxy.start.tsx). For the merchant's Countries setting it's only a
+  fallback: there the widget asks Shopify where the shopper actually is (see
+  detectShopperCountry in widget.tsx), because a shopper from a country the
+  store has no market for is put in the store's main market here (an Indian
+  shopper on a US-only store reads as US).
 
   block.shopify_attributes on the mount div isn't strictly required for
   the widget to function, but it's what lets the theme editor highlight/

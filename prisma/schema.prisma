@@ -41,12 +41,15 @@ model Shop {
   // ship), not what it is. Ids only: titles are looked up live on the
   // Suggestions page, so a renamed or deleted collection never shows stale.
   suggestionsIgnoredCollectionIds String[] @default([])
-  // Countries the widget shows in, as ISO codes (IN, AE, ...). Empty means
-  // every country. Matched against the country the shopper is shopping in on
-  // the storefront (Liquid's localization.country - the same country Shopify
-  // prices and sells to them in), which the widget sends to /eligibility and
-  // /start - see isShownInCountry in countries.server.ts.
-  allowedCountryCodes String[] @default([])
+  // The merchant's country list, as ISO codes (IN, AE, ...), and what it
+  // means: ONLY = the widget shows only in these countries, EXCEPT = it shows
+  // everywhere but these. An empty list means every country, in either mode.
+  // Matched against the country the shopper is in, per Shopify's own IP
+  // detection, which the widget sends to /eligibility and /start - see
+  // detectShopperCountry in widget.tsx and isShownInCountry in
+  // countries.server.ts.
+  countryMode  CountryMode @default(ONLY)
+  countryCodes String[]    @default([])
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -60,6 +63,12 @@ model Shop {
 // ---------------------------------------------------------------------------
 // Negotiation domain
 // ---------------------------------------------------------------------------
+
+// See Shop.countryMode.
+enum CountryMode {
+  ONLY
+  EXCEPT
+}
 
 enum TriggerType {
   ALWAYS_ON
@@ -280,7 +289,17 @@ model NegotiationSession {
   currentRound       Int      @default(0)
   // Locked in on the customer's first valid offer - see the enum comment.
   segment            CustomerSegment?
+  // The variant's price in the shopper's market - what the product page
+  // showed them (with Shopify Markets, a store can price the same product
+  // differently per country) - in the store's currency. See
+  // marketPriceInStoreCurrency in price-display.server.ts.
   startingPrice      Decimal  @db.Decimal(10, 2)
+  // The variant's own price, before any market pricing. startingPrice /
+  // basePrice is the market's price ratio, used to price product suggestions
+  // for the same market (see lookUpSuggestionsOnce in
+  // negotiation-offer.server.ts). Null for sessions from before markets were
+  // supported - treated as a ratio of 1.
+  basePrice          Decimal? @db.Decimal(10, 2)
   currentOfferPrice  Decimal? @db.Decimal(10, 2)
 
   // Which rule won this session (per the "highest max discount %" overlap

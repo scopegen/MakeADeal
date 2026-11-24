@@ -355,10 +355,25 @@ function pick<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-function fill(template: string, placeholder: string, price: number) {
+// How a store-currency price is written into a message. The default is the
+// plain number ("1700.00"); a shopper looking at prices in another currency
+// gets them in that currency instead - see price-display.server.ts.
+export type FormatPrice = (price: number) => string;
+
+const plainPrice: FormatPrice = (price) => price.toFixed(2);
+
+function fill(
+  template: string,
+  placeholder: string,
+  price: number,
+  formatPrice: FormatPrice,
+) {
+  const text = formatPrice(price);
+  // A function, not the string itself, so a "$" in a formatted price
+  // ("$332.30") is never read as a replacement pattern like "$3".
   return template.replace(
     new RegExp(`\\{\\{\\s*${placeholder}\\s*\\}\\}`, "g"),
-    price.toFixed(2),
+    () => text,
   );
 }
 
@@ -404,12 +419,18 @@ export function getSuggestionsMessage(
   return pick(SUGGESTIONS_NONE_COPIES);
 }
 
-export function getAcceptedMessage(price: number) {
-  return fill(pick(ACCEPTED_COPIES), "accepted_price", price);
+export function getAcceptedMessage(
+  price: number,
+  formatPrice: FormatPrice = plainPrice,
+) {
+  return fill(pick(ACCEPTED_COPIES), "accepted_price", price, formatPrice);
 }
 
-export function getAcceptedAtListPriceMessage(price: number) {
-  return fill(pick(AT_LIST_PRICE_COPIES), "accepted_price", price);
+export function getAcceptedAtListPriceMessage(
+  price: number,
+  formatPrice: FormatPrice = plainPrice,
+) {
+  return fill(pick(AT_LIST_PRICE_COPIES), "accepted_price", price, formatPrice);
 }
 
 // Classifies on the customer's first valid offer only - never called again
@@ -488,6 +509,7 @@ export function evaluateSegmentedOffer(
   floorPriceOverride: number | null,
   currentRound: number,
   visitorOfferPrice: number,
+  formatPrice: FormatPrice = plainPrice,
 ): SegmentedEvaluation {
   const percentFloor = startingPrice * (1 - maxDiscountPercent / 100);
   const floorPrice =
@@ -528,7 +550,7 @@ export function evaluateSegmentedOffer(
     return {
       outcome: "FLOOR_HELD",
       price: counterPrice,
-      message: fill(pick(tier.copies), "counter_price", counterPrice),
+      message: fill(pick(tier.copies), "counter_price", counterPrice, formatPrice),
     };
   }
 
@@ -537,6 +559,6 @@ export function evaluateSegmentedOffer(
     price: counterPrice,
     round: nextRound,
     isFinalTier,
-    message: fill(pick(tier.copies), "counter_price", counterPrice),
+    message: fill(pick(tier.copies), "counter_price", counterPrice, formatPrice),
   };
 }

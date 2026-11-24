@@ -1,8 +1,10 @@
-// Countries a merchant can limit Noodle to (see Shop.allowedCountryCodes).
+import type { Shop } from "@prisma/client";
+
+// Countries a merchant can show or hide Noodle in (see Shop.countryMode).
 //
-// Shopify's own CountryCode list (Admin GraphQL), which is what Liquid's
-// localization.country.iso_code - the value the widget sends - is drawn
-// from. Left out: ZZ ("Unknown Region") and AN (Netherlands Antilles,
+// Shopify's own CountryCode list (Admin GraphQL) - the same codes the
+// widget gets from Shopify's country detection (see detectShopperCountry in
+// widget.tsx). Left out: ZZ ("Unknown Region") and AN (Netherlands Antilles,
 // dissolved in 2010, kept by Shopify only for old data). Territories such as
 // Puerto Rico aren't missing - Shopify counts them as part of US.
 export const COUNTRY_CODES = [
@@ -49,19 +51,21 @@ export function countryName(code: string): string {
 }
 
 // Whether the widget shows to a shopper shopping in `country`. An empty list
-// means every country. A missing country also passes: that's a widget script
-// cached from before countries existed (or a page that somehow rendered
-// without one), and the value comes from the shopper's own browser anyway -
-// this is a merchant's preference about where to offer haggling, not a
-// security boundary, so hiding the widget when unsure would only cost real
-// shoppers. A country that IS sent but isn't on the list never passes, even
-// one this file doesn't know: the merchant can only have picked known ones.
+// means every country, in either mode. A missing country also passes: that's
+// a widget script cached from before countries existed (or a page that
+// somehow rendered without one), and the value comes from the shopper's own
+// browser anyway - this is a merchant's preference about where to offer
+// haggling, not a security boundary, so hiding the widget when unsure would
+// only cost real shoppers. A country that IS sent is matched as is, even one
+// this file doesn't know: in ONLY mode it's hidden (the merchant can only
+// have picked known ones), in EXCEPT mode it's shown.
 export function isShownInCountry(
-  allowedCountryCodes: string[],
+  shop: Pick<Shop, "countryMode" | "countryCodes">,
   country: string | null | undefined,
 ): boolean {
-  if (allowedCountryCodes.length === 0) return true;
+  if (shop.countryCodes.length === 0) return true;
   const code = country?.trim().toUpperCase();
   if (!code) return true;
-  return allowedCountryCodes.includes(code);
+  const listed = shop.countryCodes.includes(code);
+  return shop.countryMode === "EXCEPT" ? !listed : listed;
 }

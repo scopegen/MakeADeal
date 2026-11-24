@@ -10,7 +10,16 @@ import {
 import { getRateLimitedMessage } from "../models/negotiation-copy.server";
 import { getGreetingMessage } from "../models/negotiation-tiers.server";
 import { processNegotiationAction } from "../models/negotiation-offer.server";
-import { isShownInCountry } from "../models/countries.server";
+import { isCountryCode, isShownInCountry } from "../models/countries.server";
+import {
+  getPriceDisplay,
+  marketPriceInStoreCurrency,
+} from "../models/price-display.server";
+
+// A variant's price in the shopper's market (Admin API contextualPricing),
+// in that market's currency. Only asked for when the widget sent the
+// market's country - see marketCountry in the action below.
+type MarketPrice = { amount: string; currencyCode: string };
 
 type ProductPriceResponse = {
   data: {
@@ -20,7 +29,13 @@ type ProductPriceResponse = {
       priceRangeV2: {
         minVariantPrice: { amount: string; currencyCode: string };
       };
-      variants: { nodes: { id: string }[] };
+      variants: {
+        nodes: {
+          id: string;
+          price: string;
+          contextualPricing?: { price: MarketPrice } | null;
+        }[];
+      };
     } | null;
   };
 };
@@ -31,6 +46,7 @@ type VariantDetailsResponse = {
       id: string;
       price: string;
       availableForSale: boolean;
+      contextualPricing?: { price: MarketPrice } | null;
       product: {
         id: string;
         priceRangeV2: {
@@ -55,6 +71,7 @@ type ResolvedVariant =
       variantId: string;
       price: number;
       currencyCode: string;
+      marketPrice: MarketPrice | null;
     }
   // "invalid" (doesn't resolve, or belongs to a different product) falls
   // back to the old first-variant behavior, same as if no variantId had
@@ -69,14 +86,26 @@ async function resolveRequestedVariant(
   admin: { graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response> },
   variantId: string,
   productId: string,
+  marketCountry: string | null,
 ): Promise<ResolvedVariant> {
   const response = await admin.graphql(
     `#graphql
-    query NegotiationVariantDetails($id: ID!) {
+    query NegotiationVariantDetails(
+      $id: ID!
+      $country: CountryCode
+      $withMarket: Boolean!
+    ) {
       productVariant(id: $id) {
         id
         price
         availableForSale
+        contextualPricing(context: { country: $country })
+          @include(if: $withMarket) {
+          price {
+            amount
+            currencyCode
+          }
+        }
         product {
           id
           priceRangeV2 {
@@ -87,7 +116,13 @@ async function resolveRequestedVariant(
         }
       }
     }`,
-    { variables: { id: variantId } },
+    {
+      variables: {
+        id: variantId,
+        country: marketCountry,
+        withMarket: marketCountry !== null,
+      },
+    },
   );
   const json = (await response.json()) as VariantDetailsResponse;
   const variant = json.data.productVariant;
@@ -102,6 +137,7 @@ async function resolveRequestedVariant(
     variantId: variant.id,
     price: Number(variant.price),
     currencyCode: variant.product.priceRangeV2.minVariantPrice.currencyCode,
+    marketPrice: variant.contextualPricing?.price ?? null,
   };
 }
 
@@ -113,12 +149,20 @@ async function resolveRequestedVariant(
 // Otherwise falls back to the product's first variant, same as before this
 // existed - covers older cached widget scripts that don't send one yet, and
 // themes readSelectedVariantId couldn't read a variant from.
-// country (optional): the country the shopper is shopping in, checked against
-// the merchant's chosen countries - see isShownInCountry.
+// country (optional): the country the shopper is in (see
+// detectShopperCountry in widget.tsx), checked against the merchant's chosen
+// countries - see isShownInCountry.
 // firstAction (optional, "counter") + offerPrice (optional): the shopper's
 // first message, sent together with the create request so the negotiation is
 // only ever created once they actually say something (opening the panel
 // creates nothing). Without firstAction this behaves exactly as before.
+// displayCurrency + displayRate (optional): the currency the shopper is
+// looking at prices in, as for /offer - see price-display.server.ts. The
+// session itself (startingPrice, currencyCode) is always in the store's.
+// marketCountry (optional): the country the product page priced itself for
+// (its Shopify Markets market). startingPrice is that market's price for the
+// variant, so a store charging the US more than India negotiates from the
+// price the shopper actually saw.
 // Signature-verified by authenticate.public.appProxy - a client can't spoof
 // which shop this request is for.
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -188,12 +232,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // the merchant has left out (e.g. they removed it while the page was
   // open). Not tamper-proof - see isShownInCountry. Same vague error as
   // below, for the same reason.
-  if (
-    !isShownInCountry(
-      shop.allowedCountryCodes,
-      String(formData.get("country") ?? ""),
-    )
-  ) {
+  if (!isShownInCountry(shop, String(formData.get("country") ?? ""))) {
     return Response.json({ error: "not_negotiable" }, { status: 404 });
   }
 
@@ -207,13 +246,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const variantIdRaw = String(formData.get("variantId") ?? "") || null;
   const firstAction = String(formData.get("firstAction") ?? "");
+  // The country the product page priced itself for (data-country in
+  // negotiation-widget.liquid): the shopper's market, whose price is the one
+  // they saw. Not `country` above - that's where they physically are, for the
+  // merchant's Countries setting, and a shopper can browse another country's
+  // store. Missing (an older cached widget) means the variant's own price,
+  // as before.
+  const marketCountryRaw = String(formData.get("marketCountry") ?? "")
+    .trim()
+    .toUpperCase();
+  const marketCountry = isCountryCode(marketCountryRaw)
+    ? marketCountryRaw
+    : null;
 
   let resolvedVariantId: string | undefined;
-  let startingPrice: number | undefined;
+  // The variant's own price, before any market pricing.
+  let basePrice: number | undefined;
   let currencyCode: string | undefined;
+  let marketPrice: MarketPrice | null = null;
 
   if (variantIdRaw) {
-    const requested = await resolveRequestedVariant(admin, variantIdRaw, productId);
+    const requested = await resolveRequestedVariant(
+      admin,
+      variantIdRaw,
+      productId,
+      marketCountry,
+    );
     if (!requested.ok && requested.reason === "out_of_stock") {
       // The shopper explicitly picked this one - silently negotiating a
       // different variant instead would be actively misleading, so this
@@ -228,8 +286,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     if (requested.ok) {
       resolvedVariantId = requested.variantId;
-      startingPrice = requested.price;
+      basePrice = requested.price;
       currencyCode = requested.currencyCode;
+      marketPrice = requested.marketPrice;
     }
     // reason === "invalid" (stale id, or belongs to a different product)
     // falls through to the same fallback lookup as no variantId at all.
@@ -245,7 +304,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // see the schema comment on NegotiationSession.currencyCode.
     const priceResponse = await admin.graphql(
       `#graphql
-      query ProductPriceAndVariant($id: ID!) {
+      query ProductPriceAndVariant(
+        $id: ID!
+        $country: CountryCode
+        $withMarket: Boolean!
+      ) {
         product(id: $id) {
           id
           title
@@ -258,11 +321,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           variants(first: 1) {
             nodes {
               id
+              price
+              contextualPricing(context: { country: $country })
+                @include(if: $withMarket) {
+                price {
+                  amount
+                  currencyCode
+                }
+              }
             }
           }
         }
       }`,
-      { variables: { id: productId } },
+      {
+        variables: {
+          id: productId,
+          country: marketCountry,
+          withMarket: marketCountry !== null,
+        },
+      },
     );
     const priceJson = (await priceResponse.json()) as ProductPriceResponse;
     const product = priceJson.data.product;
@@ -270,21 +347,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "product_not_found" }, { status: 404 });
     }
 
-    resolvedVariantId = product.variants.nodes[0]?.id;
+    const firstVariant = product.variants.nodes[0];
+    resolvedVariantId = firstVariant?.id;
     if (!resolvedVariantId) {
       return Response.json({ error: "no_variant" }, { status: 404 });
     }
 
-    startingPrice = Number(product.priceRangeV2.minVariantPrice.amount);
     currencyCode = product.priceRangeV2.minVariantPrice.currencyCode;
+    marketPrice = firstVariant.contextualPricing?.price ?? null;
+    // The cheapest variant's price, as before markets were supported. A
+    // market price is for this first variant specifically, though, so then
+    // its own price is the one to compare it with.
+    basePrice = Number(
+      marketPrice ? firstVariant.price : product.priceRangeV2.minVariantPrice.amount,
+    );
   }
 
   // Unreachable in practice (both branches above always set all three
   // together) - only here so TypeScript can see that, since it can't
   // otherwise prove it across two separate conditionally-run blocks.
-  if (startingPrice === undefined || currencyCode === undefined) {
+  if (basePrice === undefined || currencyCode === undefined) {
     return Response.json({ error: "no_variant" }, { status: 404 });
   }
+
+  const display = getPriceDisplay(formData, currencyCode);
+  // What the product page showed the shopper - their market's price when the
+  // store prices markets differently - falling back to the variant's own
+  // price. Either way in the store's currency. See
+  // marketPriceInStoreCurrency.
+  const startingPrice =
+    marketPriceInStoreCurrency(marketPrice, currencyCode, display) ?? basePrice;
 
   const negotiationSession = await prisma.negotiationSession.create({
     data: {
@@ -298,6 +390,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       triggerType,
       currentRound: 0,
       startingPrice,
+      basePrice,
       // Frozen at session start - see the schema comment on
       // NegotiationSession.ruleId for why (an edit to this rule later
       // shouldn't retroactively change this negotiation). segment is set
@@ -320,6 +413,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       limits,
       action: "counter",
       offerPriceRaw: formData.get("offerPrice"),
+      display,
     });
     return Response.json({
       sessionId: negotiationSession.id,

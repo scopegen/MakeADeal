@@ -15,6 +15,7 @@ import {
   findSuggestions,
   type SuggestionsMatch,
 } from "./product-suggestions.server";
+import { showSuggestedProducts, type PriceDisplay } from "./price-display.server";
 
 // The longest a reply will wait on product suggestions before going out
 // without them. Shopify doesn't publish the app proxy's own timeout, and
@@ -30,18 +31,25 @@ const SUGGESTIONS_DEADLINE_MS = 3000;
 //
 // Returns a plain Response so each caller can pass it straight back (or, for
 // /start, read its JSON and embed it).
+//
+// display: the currency the shopper is looking at prices in (see
+// price-display.server.ts). Only the typed offer coming in and the prices
+// written into replies go through it - every number in here, and every
+// `price` in a response, is in the store's currency.
 export async function processNegotiationAction({
   admin,
   negotiationSession,
   limits,
   action,
   offerPriceRaw,
+  display,
 }: {
   admin: AdminGraphqlClient;
   negotiationSession: NegotiationSession;
   limits: { maxDiscountPercent: number; floorPriceOverride: number | null };
   action: string;
   offerPriceRaw: FormDataEntryValue | null;
+  display: PriceDisplay;
 }): Promise<Response> {
   const startingPrice = Number(negotiationSession.startingPrice);
 
@@ -81,8 +89,8 @@ export async function processNegotiationAction({
     return Response.json({
       status: "ACCEPTED",
       message: atOrAboveListPrice
-        ? getAcceptedAtListPriceMessage(price)
-        : getAcceptedMessage(price),
+        ? getAcceptedAtListPriceMessage(price, display.formatPrice)
+        : getAcceptedMessage(price, display.formatPrice),
       price,
       checkoutUrl: draftOrder.invoiceUrl,
     });
@@ -98,6 +106,15 @@ export async function processNegotiationAction({
   // the app proxy's patience - the decline or floor-held reply it rides
   // along with. null also leaves suggestionsShown false, so the next held
   // floor can try again.
+  //
+  // Market pricing: startingPrice is the shopper's market's price, but the
+  // search works in the products' own prices (Shopify's product search has
+  // no market prices). So the offer and original price are turned into own
+  // prices with the market's ratio - startingPrice / basePrice, e.g. 1.5 for
+  // a market priced 50% above the store's own prices - and the cards' own
+  // prices back into market prices. Exact for markets priced by a
+  // percentage, the usual setup; a market with hand-set prices per product
+  // gets the closest estimate.
   async function lookUpSuggestionsOnce(
     offerPrice: number,
   ): Promise<SuggestionsMatch | null> {
@@ -108,12 +125,26 @@ export async function processNegotiationAction({
     });
     if (!shop?.suggestionsEnabled) return null;
 
+    const basePrice = Number(negotiationSession.basePrice);
+    const marketRatio =
+      basePrice > 0 && startingPrice > 0 ? startingPrice / basePrice : 1;
+
     const lookup = findSuggestions(admin, {
       productId: negotiationSession.productId,
-      offerPrice,
-      originalPrice: startingPrice,
+      offerPrice: offerPrice / marketRatio,
+      originalPrice: startingPrice / marketRatio,
       ignoredCollectionIds: shop.suggestionsIgnoredCollectionIds,
-    });
+    }).then((match): SuggestionsMatch =>
+      match.kind === "none" || marketRatio === 1
+        ? match
+        : {
+            ...match,
+            products: match.products.map((product) => ({
+              ...product,
+              price: Math.round(product.price * marketRatio * 100) / 100,
+            })),
+          },
+    );
     // Once the deadline wins, nothing awaits the lookup any more - this keeps
     // a failure it hits afterwards from surfacing as an unhandled rejection.
     lookup.catch(() => {});
@@ -176,7 +207,10 @@ export async function processNegotiationAction({
       message: getDeclinedMessage(),
       suggestions:
         suggestions && suggestions.kind !== "none" && suggestionsMessage
-          ? { message: suggestionsMessage, products: suggestions.products }
+          ? {
+              message: suggestionsMessage,
+              products: showSuggestedProducts(suggestions.products, display),
+            }
           : null,
     });
   }
@@ -189,7 +223,10 @@ export async function processNegotiationAction({
   }
 
   if (action === "counter") {
-    const offerPrice = Number(offerPriceRaw);
+    // What the shopper typed is in the currency they're looking at -
+    // everything from here on is in the store's.
+    const typedPrice = Number(offerPriceRaw);
+    const offerPrice = display.toShop(typedPrice);
     // No parseable price in the message - doesn't consume a round or error
     // out, just asks conversationally for one. Doesn't touch currentRound
     // or segment at all, so a chatty "hi"/"maybe" reply before any real
@@ -224,6 +261,7 @@ export async function processNegotiationAction({
       limits.floorPriceOverride,
       negotiationSession.currentRound,
       offerPrice,
+      display.formatPrice,
     );
 
     await prisma.negotiationOffer.create({
@@ -314,7 +352,10 @@ export async function processNegotiationAction({
         suggestions: suggestions
           ? {
               message: getSuggestionsMessage("floor_held", suggestions.kind) ?? "",
-              products: suggestions.kind === "none" ? [] : suggestions.products,
+              products:
+                suggestions.kind === "none"
+                  ? []
+                  : showSuggestedProducts(suggestions.products, display),
             }
           : null,
       });

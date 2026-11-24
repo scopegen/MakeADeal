@@ -17,6 +17,8 @@ type FieldChangeEvent = { currentTarget: { value: string } };
 
 type Country = { code: string; name: string };
 
+type CountryMode = "ONLY" | "EXCEPT";
+
 // How many search matches to list at once - enough to find any country by
 // its first few letters without turning the page into a 248-row list.
 const MAX_MATCHES = 8;
@@ -32,15 +34,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     countries,
+    mode: shop.countryMode as CountryMode,
     // In name order, like the search results.
     selectedCodes: countries
-      .filter((c) => shop.allowedCountryCodes.includes(c.code))
+      .filter((c) => shop.countryCodes.includes(c.code))
       .map((c) => c.code),
   };
 };
 
-// Saved the moment it changes, like the Suggestions page: the full new list
-// comes in each time (one country added or removed, or all cleared).
+// Saved the moment it changes, like the Suggestions page: the mode and the
+// full new list come in each time (the mode switched, one country added or
+// removed, or all cleared).
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getShopByDomain(session.shop);
@@ -54,13 +58,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   // Only codes from the known list, so nothing a hand-crafted request sends
   // can end up stored. Can't grow past the list's own length.
-  const allowedCountryCodes = Array.isArray(parsed)
+  const countryCodes = Array.isArray(parsed)
     ? [...new Set(parsed.filter(isCountryCode))]
     : [];
+  const countryMode: CountryMode =
+    formData.get("countryMode") === "EXCEPT" ? "EXCEPT" : "ONLY";
 
   await prisma.shop.update({
     where: { id: shop.id },
-    data: { allowedCountryCodes },
+    data: { countryMode, countryCodes },
   });
 
   return redirect("/app/countries");
@@ -72,7 +78,7 @@ function normalize(text: string) {
 }
 
 export default function Countries() {
-  const { countries, selectedCodes } = useLoaderData<typeof loader>();
+  const { countries, mode, selectedCodes } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const submit = useSubmit();
   const busy = navigation.state !== "idle";
@@ -116,8 +122,9 @@ export default function Countries() {
         .slice(0, MAX_MATCHES)
     : [];
 
-  function save(codes: string[]) {
+  function save(codes: string[], newMode: CountryMode = mode) {
     const formData = new FormData();
+    formData.set("countryMode", newMode);
     formData.set("countryCodes", JSON.stringify(codes));
     submit(formData, { method: "post" });
   }
@@ -128,11 +135,24 @@ export default function Countries() {
         <s-stack direction="block" gap="base">
           <s-paragraph>
             Choose the countries where shoppers can negotiate. Noodle uses the
-            country a shopper is shopping in on your store, the same one
-            Shopify uses for their prices and currency. It changes if they
-            pick another country in your store&apos;s country selector.
-            Changes save as soon as you add or remove a country.
+            country Shopify detects the shopper is in, from their internet
+            connection. Shoppers using a VPN may be detected in a different
+            country. Changes save straight away.
           </s-paragraph>
+
+          <s-select
+            label="Show Noodle"
+            value={mode}
+            disabled={busy || undefined}
+            onChange={(e: FieldChangeEvent) =>
+              save(selectedCodes, e.currentTarget.value as CountryMode)
+            }
+          >
+            <s-option value="ONLY">Only in the countries below</s-option>
+            <s-option value="EXCEPT">
+              In every country except the ones below
+            </s-option>
+          </s-select>
 
           {selected.length === 0 ? (
             <s-banner tone="info">
@@ -144,7 +164,9 @@ export default function Countries() {
           ) : (
             <s-stack direction="block" gap="small">
               <s-paragraph>
-                Noodle only shows to shoppers in{" "}
+                {mode === "EXCEPT"
+                  ? "Noodle is hidden from shoppers in "
+                  : "Noodle only shows to shoppers in "}
                 {selected.length === 1
                   ? "this country"
                   : `these ${selected.length} countries`}
