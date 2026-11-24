@@ -14,9 +14,12 @@ import { addDisplayCurrency } from "./display-currency";
 //   - No persistence: reloading the page loses the in-progress
 //     conversation. The anonymous visitor ID does persist (localStorage).
 //
-// Visual approach: structural/animation CSS lives in one injected
-// <style> tag (STYLESHEET below, scoped by an "sgn-" class prefix) so real
-// hover/focus/keyframe support exists - inline styles alone can't do that.
+// Visual approach: structural/animation CSS lives in one <style> tag
+// (STYLESHEET below, "sgn-" class prefix) so real hover/focus/keyframe
+// support exists - inline styles alone can't do that. Everything renders
+// inside shadow roots, with that style tag in each - see addStylesheet for
+// why (it keeps other apps' scripts, like third-party checkouts, off the
+// widget's buttons).
 // The accent color is a CSS custom property (--sgn-accent/--sgn-accent-
 // hover) with a midnight-blue default baked into the stylesheet itself,
 // overridden at runtime once the rule's config loads (see the useEffect
@@ -837,7 +840,8 @@ function ChatWidget({
   return (
     <>
       {launcher}
-      {/* Portaled straight to document.body, not rendered in place - the
+      {/* Portaled to a host element at the end of document.body (inside
+      its own shadow root - see panelContainer), not rendered in place - the
       panel is position: fixed and needs to stay anchored to the real
       viewport. Now that the launcher (and this mount point) lives inline
       inside the merchant's product template instead of body-injected,
@@ -845,8 +849,8 @@ function ChatWidget({
       perspective/contain would silently turn position: fixed into "fixed
       relative to that ancestor" instead of the viewport - a real, common
       thing themes do (sliders, sticky sections, animations). The portal
-      sidesteps that entirely: this DOM subtree's parent is always
-      document.body itself, regardless of where in the page the block was
+      sidesteps that entirely: this DOM subtree's host is always a direct
+      child of document.body, regardless of where in the page the block was
       dropped. */}
       {createPortal(
     <div className="sgn-panel">
@@ -1108,25 +1112,21 @@ function ChatWidget({
         </div>
       )}
     </div>,
-        document.body,
+        panelContainer(),
       )}
     </>
   );
 }
 
 // Default accent color (midnight blue) - used whenever a rule doesn't set
-// its own primaryColor. Referenced only to compute the hover shade below;
-// the stylesheet itself reads the CSS custom properties, not these
-// directly, so a merchant's color can override them at runtime without
-// re-injecting CSS. See setAccentColor and the file header comment.
+// its own primaryColor. The stylesheet reads the CSS custom properties
+// --sgn-accent/--sgn-accent-hover, with these as each rule's fallback, so a
+// merchant's color (set on <html> by setAccentColor, inherited into the
+// shadow roots) overrides them at runtime without re-injecting CSS.
 const DEFAULT_ACCENT = "#191970";
 const DEFAULT_ACCENT_HOVER = "#12124f";
 
 const STYLESHEET = `
-:root {
-  --sgn-accent: ${DEFAULT_ACCENT};
-  --sgn-accent-hover: ${DEFAULT_ACCENT_HOVER};
-}
 .sgn-launcher, .sgn-panel, .sgn-panel * {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   box-sizing: border-box;
@@ -1145,7 +1145,7 @@ const STYLESHEET = `
      trigger itself moved inline. */
   display: flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; padding: 14px 22px; border-radius: 999px; border: none;
-  background: var(--sgn-accent); color: #fff; font-size: 14px; font-weight: 600;
+  background: var(--sgn-accent, ${DEFAULT_ACCENT}); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; box-shadow: 0 8px 24px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.12);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
@@ -1166,7 +1166,7 @@ const STYLESHEET = `
 }
 .sgn-header {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 16px; background: var(--sgn-accent); color: #fff;
+  padding: 16px; background: var(--sgn-accent, ${DEFAULT_ACCENT}); color: #fff;
 }
 .sgn-header-title { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
 .sgn-close-btn {
@@ -1197,7 +1197,7 @@ const STYLESHEET = `
   to { opacity: 1; transform: translateY(0); }
 }
 .sgn-bubble-bot { background: #f0f1f3; color: #111; border-bottom-left-radius: 4px; }
-.sgn-bubble-customer { background: var(--sgn-accent); color: #fff; border-bottom-right-radius: 4px; }
+.sgn-bubble-customer { background: var(--sgn-accent, ${DEFAULT_ACCENT}); color: #fff; border-bottom-right-radius: 4px; }
 .sgn-bubble-system {
   background: transparent; color: #9aa0a6; font-size: 12px; font-style: italic;
   box-shadow: none; max-width: 100%; text-align: center;
@@ -1228,7 +1228,7 @@ const STYLESHEET = `
   font-size: 11.5px; font-weight: 600; line-height: 1.3; color: #111;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.sgn-suggestion-price { font-size: 12px; font-weight: 700; color: var(--sgn-accent); }
+.sgn-suggestion-price { font-size: 12px; font-weight: 700; color: var(--sgn-accent, ${DEFAULT_ACCENT}); }
 @keyframes sgn-typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-4px); opacity: 1; }
@@ -1242,15 +1242,15 @@ const STYLESHEET = `
   from { opacity: 0; transform: scale(0.9); }
   to { opacity: 1; transform: scale(1); }
 }
-.sgn-tag-icon { color: var(--sgn-accent); }
+.sgn-tag-icon { color: var(--sgn-accent, ${DEFAULT_ACCENT}); }
 .sgn-congrats-text { margin: 0; font-size: 14px; color: #333; font-weight: 500; }
 .sgn-congrats-badge {
   display: inline-block; padding: 2px 10px; border-radius: 999px;
-  background: var(--sgn-accent); color: #fff; font-weight: 700;
+  background: var(--sgn-accent, ${DEFAULT_ACCENT}); color: #fff; font-weight: 700;
 }
 .sgn-checkout-link {
   display: block; text-align: center; margin: 0 16px 16px; padding: 12px;
-  border-radius: 999px; background: var(--sgn-accent); color: #fff; text-decoration: none;
+  border-radius: 999px; background: var(--sgn-accent, ${DEFAULT_ACCENT}); color: #fff; text-decoration: none;
   font-weight: 700; font-size: 13.5px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   transition: transform 0.12s ease;
 }
@@ -1266,7 +1266,7 @@ const STYLESHEET = `
   font-size: 13px; font-weight: 600; color: #111; text-align: left;
 }
 .sgn-deals-toggle:hover { background: #fafafa; }
-.sgn-deals-toggle-total { color: var(--sgn-accent); font-weight: 700; white-space: nowrap; }
+.sgn-deals-toggle-total { color: var(--sgn-accent, ${DEFAULT_ACCENT}); font-weight: 700; white-space: nowrap; }
 .sgn-deals-body { padding: 0 16px 12px; }
 .sgn-deals-list {
   display: flex; flex-direction: column; gap: 8px; max-height: 150px; overflow-y: auto;
@@ -1306,14 +1306,14 @@ const STYLESHEET = `
   flex: 1; min-width: 0; padding: 10px 14px; border: 1.5px solid #e5e5e5;
   border-radius: 999px; font-size: 13.5px; outline: none; transition: border-color 0.15s ease;
 }
-.sgn-input:focus { border-color: var(--sgn-accent); }
+.sgn-input:focus { border-color: var(--sgn-accent, ${DEFAULT_ACCENT}); }
 .sgn-action-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .sgn-btn {
-  padding: 9px 16px; border: none; border-radius: 999px; background: var(--sgn-accent);
+  padding: 9px 16px; border: none; border-radius: 999px; background: var(--sgn-accent, ${DEFAULT_ACCENT});
   color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
   transition: transform 0.12s ease, background 0.12s ease;
 }
-.sgn-btn:hover:not(:disabled) { transform: translateY(-1px); background: var(--sgn-accent-hover); }
+.sgn-btn:hover:not(:disabled) { transform: translateY(-1px); background: var(--sgn-accent-hover, ${DEFAULT_ACCENT_HOVER}); }
 .sgn-btn:disabled { opacity: 0.6; cursor: default; }
 .sgn-btn-secondary {
   padding: 9px 16px; border: 1.5px solid #e0e0e0; border-radius: 999px; background: #fff;
@@ -1323,12 +1323,59 @@ const STYLESHEET = `
 .sgn-btn-secondary:disabled { opacity: 0.6; cursor: default; }
 `;
 
-function injectStylesheet() {
-  if (document.getElementById(STYLE_TAG_ID)) return;
+// Everything the widget renders lives inside shadow roots - one on the mount
+// div for the launcher, one on a host div at the end of <body> for the chat
+// panel - not in the page's own DOM. Other apps' scripts on the storefront
+// can't see or change anything in there: their document.querySelectorAll
+// and MutationObservers don't reach into a shadow root. That's what keeps
+// Noodle's checkout buttons Noodle's. Third-party checkout apps such as
+// GoKwik take over every button or link on the page whose text says
+// "checkout" and open their own checkout for the shopper's cart instead -
+// which for a negotiated deal (a draft order, never in the cart) showed
+// "cart is empty". Tested on a live store running GoKwik: a normal
+// "Complete checkout" link was taken over, the same link in a shadow root
+// was left alone. It also keeps the theme's CSS off the widget and the
+// widget's off the theme.
+//
+// The stylesheet goes into each shadow root (styles don't cross the
+// boundary). The accent color still works: CSS custom properties do inherit
+// into shadow roots, so setAccentColor setting them on <html> reaches both,
+// and every rule has the default color as its fallback.
+function addStylesheet(root: ShadowRoot) {
+  if (root.querySelector(`style#${STYLE_TAG_ID}`)) return;
   const styleEl = document.createElement("style");
   styleEl.id = STYLE_TAG_ID;
   styleEl.textContent = STYLESHEET;
-  document.head.appendChild(styleEl);
+  root.appendChild(styleEl);
+}
+
+// A container inside a shadow root on `host`, with the stylesheet - created
+// once, reused after.
+function shadowContainer(host: HTMLElement): HTMLElement {
+  const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+  addStylesheet(root);
+  let container = root.querySelector<HTMLElement>(".sgn-root");
+  if (!container) {
+    container = document.createElement("div");
+    container.className = "sgn-root";
+    root.appendChild(container);
+  }
+  return container;
+}
+
+const PANEL_HOST_ID = "scopegen-nego-panel";
+
+// Where the chat panel is portaled to - see the portal comment in
+// ChatWidget for why it's at the end of <body>, and above for the shadow
+// root.
+function panelContainer(): HTMLElement {
+  let host = document.getElementById(PANEL_HOST_ID);
+  if (!host) {
+    host = document.createElement("div");
+    host.id = PANEL_HOST_ID;
+    document.body.appendChild(host);
+  }
+  return shadowContainer(host);
 }
 
 function bootstrap() {
@@ -1338,8 +1385,7 @@ function bootstrap() {
   const productId = mount.dataset.productId;
   if (pageType !== "product" || !productId) return;
 
-  injectStylesheet();
-  const root = createRoot(mount);
+  const root = createRoot(shadowContainer(mount));
   root.render(
     <ChatWidget
       productId={productId}
