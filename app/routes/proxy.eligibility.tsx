@@ -3,8 +3,9 @@ import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/negotiation-settings.server";
 import { resolveEffectiveLimits } from "../models/negotiation-engine.server";
 import { getGreetingLines } from "../models/negotiation-tiers.server";
+import { isShownInCountry } from "../models/countries.server";
 
-// Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...&variantId=...
+// Storefront-facing: GET https://{shop}/apps/negotiate/eligibility?productId=...&variantId=...&country=...
 // Cheap read-only check so the widget only renders its button on products
 // that are actually negotiable, without creating a NegotiationSession just
 // from a page view. variantId is optional - whichever variant was selected
@@ -22,6 +23,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const productId = url.searchParams.get("productId") ?? "";
   const variantId = url.searchParams.get("variantId");
   if (!productId) {
+    return Response.json({ eligible: false });
+  }
+
+  // Checked before anything that costs an Admin API call. country is the
+  // one the shopper is shopping in (see data-country in
+  // negotiation-widget.liquid).
+  if (
+    !isShownInCountry(shop.allowedCountryCodes, url.searchParams.get("country"))
+  ) {
     return Response.json({ eligible: false });
   }
 

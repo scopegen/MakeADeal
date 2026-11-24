@@ -67,6 +67,11 @@ export default function Privacy() {
             abuse of the negotiation feature. It is deleted within about an
             hour.
           </li>
+          <li>
+            The country you&apos;re shopping in on the store (the one the store
+            shows you prices for), used only to check whether the merchant
+            offers negotiation in that country. It is not stored.
+          </li>
         </ul>
 
         <p>

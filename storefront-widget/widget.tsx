@@ -292,9 +292,14 @@ function TagIcon() {
 function ChatWidget({
   productId,
   initialVariantId,
+  country,
 }: {
   productId: string;
   initialVariantId: string | null;
+  // The country the shopper is shopping in (data-country in the liquid
+  // block). Sent to /eligibility and /start, which hide the widget outside
+  // the merchant's chosen countries.
+  country: string | null;
 }) {
   const [eligible, setEligible] = useState(false);
   const [config, setConfig] = useState<WidgetConfig | null>(null);
@@ -326,6 +331,7 @@ function ChatWidget({
   useEffect(() => {
     const params = new URLSearchParams({ productId });
     if (initialVariantId) params.set("variantId", initialVariantId);
+    if (country) params.set("country", country);
     fetch("/apps/negotiate/eligibility?" + params.toString())
       .then((res) => res.json())
       .then((data) => {
@@ -349,7 +355,7 @@ function ChatWidget({
         }
       })
       .catch(() => setEligible(false));
-  }, [productId, initialVariantId]);
+  }, [productId, initialVariantId, country]);
 
   // Opening the panel (by click or automatically) only shows it and the
   // greeting - it deliberately creates nothing on the server. A negotiation
@@ -452,6 +458,7 @@ function ChatWidget({
       fd.set("anonymousId", getAnonymousId());
       const variantId = readSelectedVariantId(initialVariantId);
       if (variantId) fd.set("variantId", variantId);
+      if (country) fd.set("country", country);
       fd.set("firstAction", "counter");
       if (price != null) fd.set("offerPrice", String(price));
       const res = await fetch("/apps/negotiate/start", {
@@ -1016,6 +1023,7 @@ function bootstrap() {
     <ChatWidget
       productId={productId}
       initialVariantId={mount.dataset.variantId ?? null}
+      country={mount.dataset.country || null}
     />,
   );
 }

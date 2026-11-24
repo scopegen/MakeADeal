@@ -41,6 +41,12 @@ model Shop {
   // ship), not what it is. Ids only: titles are looked up live on the
   // Suggestions page, so a renamed or deleted collection never shows stale.
   suggestionsIgnoredCollectionIds String[] @default([])
+  // Countries the widget shows in, as ISO codes (IN, AE, ...). Empty means
+  // every country. Matched against the country the shopper is shopping in on
+  // the storefront (Liquid's localization.country - the same country Shopify
+  // prices and sells to them in), which the widget sends to /eligibility and
+  // /start - see isShownInCountry in countries.server.ts.
+  allowedCountryCodes String[] @default([])
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

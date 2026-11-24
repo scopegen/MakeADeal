@@ -76,6 +76,7 @@ export default function App() {
             <s-link href="/app">Negotiations</s-link>
             <s-link href="/app/rules">Rules</s-link>
             <s-link href="/app/suggestions">Suggestions</s-link>
+            <s-link href="/app/countries">Countries</s-link>
             {isInternal && <s-link href="/app/internal">Internal</s-link>}
           </s-app-nav>
           <Outlet />

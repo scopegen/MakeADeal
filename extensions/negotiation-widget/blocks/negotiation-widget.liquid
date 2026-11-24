@@ -26,6 +26,12 @@
   silent no-op anywhere else (per the same pageType guard), so there's no
   reason to let a merchant add it to a page it can't do anything on.
 
+  data-country is the country the shopper is shopping in - the one Shopify
+  prices and sells to them in, which changes if they pick another country
+  in the store's country selector (the page reloads when they do). The
+  widget passes it to the server, which hides the widget outside the
+  countries the merchant chose in the app's Countries page.
+
   block.shopify_attributes on the mount div isn't strictly required for
   the widget to function, but it's what lets the theme editor highlight/
   select this exact block when a merchant clicks it, standard practice
@@ -35,6 +41,7 @@
   id="scopegen-nego-widget"
   data-shop="{{ shop.permanent_domain }}"
   data-page-type="{{ request.page_type }}"
+  data-country="{{ localization.country.iso_code }}"
   {% if product %}data-product-id="gid://shopify/Product/{{ product.id }}"{% endif %}
   {% if product %}data-variant-id="gid://shopify/ProductVariant/{{ product.selected_or_first_available_variant.id }}"{% endif %}
   {{ block.shopify_attributes }}

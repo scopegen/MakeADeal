@@ -10,6 +10,7 @@ import {
 import { getRateLimitedMessage } from "../models/negotiation-copy.server";
 import { getGreetingMessage } from "../models/negotiation-tiers.server";
 import { processNegotiationAction } from "../models/negotiation-offer.server";
+import { isShownInCountry } from "../models/countries.server";
 
 type ProductPriceResponse = {
   data: {
@@ -112,6 +113,8 @@ async function resolveRequestedVariant(
 // Otherwise falls back to the product's first variant, same as before this
 // existed - covers older cached widget scripts that don't send one yet, and
 // themes readSelectedVariantId couldn't read a variant from.
+// country (optional): the country the shopper is shopping in, checked against
+// the merchant's chosen countries - see isShownInCountry.
 // firstAction (optional, "counter") + offerPrice (optional): the shopper's
 // first message, sent together with the create request so the negotiation is
 // only ever created once they actually say something (opening the panel
@@ -178,6 +181,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (!productId) {
     return Response.json({ error: "missing_product_id" }, { status: 400 });
+  }
+
+  // Same country check /eligibility already did before showing the widget,
+  // repeated so the server itself never starts a negotiation for a country
+  // the merchant has left out (e.g. they removed it while the page was
+  // open). Not tamper-proof - see isShownInCountry. Same vague error as
+  // below, for the same reason.
+  if (
+    !isShownInCountry(
+      shop.allowedCountryCodes,
+      String(formData.get("country") ?? ""),
+    )
+  ) {
+    return Response.json({ error: "not_negotiable" }, { status: 404 });
   }
 
   const limits = await resolveEffectiveLimits(admin, shop.id, productId);
